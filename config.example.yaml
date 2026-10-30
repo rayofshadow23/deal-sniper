@@ -12,6 +12,9 @@ telegram_scraper:
   # Canali da monitorare in tempo reale (username senza @ oppure link)
   channels:
     - "scontoso"
+    - "scontierrati"
+    - "Offerte20255"
+    - "rafficaffari"
     - "techleakszone"
     - "shaledeals"
 
