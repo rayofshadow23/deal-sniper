@@ -35,12 +35,13 @@ def main():
     client = TelegramClient(session_name, api_id, api_hash)
     
     async def login():
-        await client.start()
+        phone = input("\n📱 Inserisci il NUMERO DI TELEFONO dell'account (es. +393331234567, NON il token del bot!): ").strip()
+        await client.start(phone=phone)
         me = await client.get_me()
         print("\n✅ LOGIN RIUSCITO!")
-        print(f"👤 Autenticato come: {me.first_name} (@{me.username or 'nessun username'}) [ID: {me.id}]")
+        print(f"👤 Autenticato come UTENTE: {me.first_name} (@{me.username or 'nessun username'}) [ID: {me.id}]")
         print(f"📁 File di sessione '{session_name}.session' generato con successo.")
-        print("Ora puoi avviare il bot con: python3 main.py oppure via Docker Compose!")
+        print("Ora puoi avviare il bot con Docker Compose!")
         await client.disconnect()
 
     asyncio.run(login())
