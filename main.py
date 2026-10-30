@@ -7,6 +7,7 @@ from telethon import TelegramClient, events
 from storage import DealStorage
 from amazon_scraper import extract_links_from_text, resolve_amazon_link, fetch_amazon_product
 from bot_notifier import TelegramBotNotifier
+from bot_listener import run_bot_listener
 
 def load_config(config_path: str = "config.yaml") -> dict:
     if not os.path.exists(config_path):
@@ -91,7 +92,20 @@ async def process_message(event_or_msg, chat_title: str, storage: DealStorage, n
             print(f"[{chat_title}] ASIN {asin} già notificato di recente, saltato.")
             continue
 
-        print(f"🚨 [ALERT CONFERMATO] {title} a {price:.2f}€ (-{discount}%)! Invio notifica...")
+        # Verifica quali utenti vogliono questa notifica in base ai loro filtri personali
+        default_kw = config.get("filters", {}).get("keywords", [])
+        search_target = f"{title} {msg_text}"
+        all_alert_cids = config.get("telegram_bot", {}).get("alert_chat_ids", [])
+        recipients = [
+            cid for cid in all_alert_cids
+            if storage.matches_user_filter(cid, search_target, default_kw)
+        ]
+
+        if not recipients:
+            print(f"[{chat_title}] ASIN {asin} scartato: nessun utente ha filtri corrispondenti a '{title[:35]}'.")
+            continue
+
+        print(f"🚨 [ALERT CONFERMATO] {title} a {price:.2f}€ (-{discount}%)! Invio a {len(recipients)} destinatari...")
 
         # Invia notifica sul Bot Telegram con tag affiliazione e link Keepa
         snippet = msg_text.split("\n")[0] if msg_text else ""
@@ -102,7 +116,8 @@ async def process_message(event_or_msg, chat_title: str, storage: DealStorage, n
             deal_badge=badge or ("Errore Prezzo" if is_error_flagged else "Super Offerta"),
             asin=asin,
             channel_name=chat_title,
-            original_msg_snippet=snippet
+            original_msg_snippet=snippet,
+            chat_ids=recipients
         )
 
         # Registra alert nel database
@@ -143,6 +158,10 @@ async def main():
     await client.start()
 
     print("✅ Connessione Telegram Scraper attiva!")
+
+    # Avvia il listener comandi del bot (/filter, /status, ecc.) in background
+    if bot_token:
+        asyncio.create_task(run_bot_listener(bot_token, storage, config))
 
     # Registra listener per nuovi messaggi in tempo reale
     @client.on(events.NewMessage(chats=channels))

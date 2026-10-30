@@ -37,6 +37,20 @@ Appena un canale segnala un'offerta o un errore di prezzo, il bot:
 
 ---
 
+## 🎯 Filtri Personalizzati per Utente (`/filter`)
+
+Ogni utente può scegliere se ricevere **tutte le offerte** o **solo specifici prodotti** parlando direttamente con il bot:
+
+- `/filter ssd, nvme` : Ricevi solo offerte o errori di prezzo per SSD e NVMe.
+- `/filter lego, switch` : Ricevi solo offerte Lego o Nintendo Switch.
+- `/filter all` : Rimuovi i filtri e ricevi **TUTTE** le offerte ed errori senza distinzione.
+- `/filter` : Mostra i filtri attualmente attivi per la tua chat.
+- `/status` : Visualizza i canali monitorati e le statistiche del bot.
+
+*(Puoi anche scrivere direttamente `ssd, nvme` in chat senza anteporre lo slash).*
+
+---
+
 ## ⚡ Guida Rapida all'Installazione
 
 ### 1. Prerequisiti

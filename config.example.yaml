@@ -44,6 +44,12 @@ filters:
   # Ore di cooldown per evitare di ri-notificare lo stesso ASIN se ripostato
   cooldown_hours: 6.0
 
+  # Filtro parole chiave globale predefinito (es. ["ssd", "nvme"]).
+  # Se lasci vuoto [], notifica qualsiasi categoria di prodotto.
+  # NOTA: Ogni utente può sovrascrivere questa preferenza scrivendo direttamente al bot Telegram:
+  # es: "/filter ssd, nvme" oppure "/filter all" per ricevere tutto!
+  keywords: []
+
 # 4. Database SQLite (memorizza messaggi già letti e storico offerte)
 database:
   path: "data/deals.db"

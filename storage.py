@@ -29,6 +29,13 @@ class DealStorage:
                     last_alerted_at REAL
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_filters (
+                    chat_id INTEGER PRIMARY KEY,
+                    keywords TEXT,
+                    updated_at REAL
+                )
+            """)
             conn.commit()
 
     def is_message_processed(self, chat_id: int, message_id: int) -> bool:
@@ -82,3 +89,48 @@ class DealStorage:
                 (asin, title, price, discount_pct, channel_name, time.time())
             )
             conn.commit()
+
+    def get_user_keywords(self, chat_id: int) -> Optional[list]:
+        """
+        Restituisce:
+        - None se l'utente non ha impostato preferenze
+        - [] (lista vuota) se l'utente vuole TUTTO (ALL)
+        - [kw1, kw2, ...] se l'utente ha impostato filtri specifici
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT keywords FROM user_filters WHERE chat_id = ?", (chat_id,))
+            row = cursor.fetchone()
+            if not row or row[0] is None:
+                return None
+            raw = row[0].strip()
+            if raw.upper() == "ALL" or not raw:
+                return []
+            return [k.strip().lower() for k in raw.split(",") if k.strip()]
+
+    def set_user_keywords(self, chat_id: int, keywords: list):
+        """Salva le parole chiave preferite per un utente. Lista vuota = 'ALL'."""
+        val = ",".join([k.strip().lower() for k in keywords]) if keywords else "ALL"
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO user_filters (chat_id, keywords, updated_at) VALUES (?, ?, ?)",
+                (chat_id, val, time.time())
+            )
+            conn.commit()
+
+    def matches_user_filter(self, chat_id: int, search_text: str, default_keywords: Optional[list] = None) -> bool:
+        """
+        Verifica se il testo dell'offerta soddisfa i filtri dell'utente:
+        - Se l'utente ha scelto 'ALL' ([]): True per tutto.
+        - Se l'utente ha filtri specifici: True solo se almeno una parola chiave è presente.
+        - Se l'utente non ha mai configurato filtri: usa default_keywords (se vuoto -> True).
+        """
+        user_kw = self.get_user_keywords(chat_id)
+        active_kw = user_kw if user_kw is not None else (default_keywords or [])
+
+        # Se non c'è alcun filtro attivo, riceve tutto
+        if not active_kw:
+            return True
+
+        text_lower = search_text.lower()
+        return any(kw in text_lower for kw in active_kw)
