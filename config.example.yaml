@@ -1,0 +1,41 @@
+# ========================================================
+# 🚀 DEAL SNIPER CONFIGURATION
+# ========================================================
+
+# 1. Telegram Scraper (Account dedicato / Telethon)
+# Ottieni gratuitamente api_id e api_hash da: https://my.telegram.org -> "API development tools"
+telegram_scraper:
+  api_id: 12345678
+  api_hash: "abcdef0123456789abcdef0123456789"
+  session_name: "data/deal_scraper"
+  
+  # Canali da monitorare in tempo reale (username senza @ oppure link)
+  channels:
+    - "scontoso"
+    - "techleakszone"
+    - "shaledeals"
+
+# 2. Telegram Bot per ricevere le notifiche (da @BotFather)
+telegram_bot:
+  token: "IL_TUO_BOT_TOKEN_DA_BOTFATHER"
+  
+  # Lista di Chat ID Telegram che riceveranno le notifiche istantanee
+  # (Puoi scoprire il tuo ID inviando un messaggio a @userinfobot)
+  alert_chat_ids:
+    - 123456789
+
+# 3. Filtri e Criteri di Notifica
+filters:
+  # Se True: controlla qualsiasi link Amazon trovato nel canale
+  # Se False: controlla solo i post che contengono parole come "errore", "bug", "minimo", "bomba"
+  check_all_amazon_links: true
+
+  # Sconto minimo percentuale per scattare l'alert (se non marcato come errore esplicito)
+  min_discount_pct: 35.0
+
+  # Ore di cooldown per evitare di ri-notificare lo stesso ASIN se ripostato
+  cooldown_hours: 6.0
+
+# 4. Database SQLite (memorizza messaggi già letti e storico offerte)
+database:
+  path: "data/deals.db"
