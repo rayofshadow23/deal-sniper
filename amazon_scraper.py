@@ -216,13 +216,43 @@ def fetch_amazon_product(asin: str, session: Optional[requests.Session] = None, 
                 if price == 0.0:
                     is_available = False
 
+            # 5. Prezzo di Riferimento Storico (Consigliato / Ultimi 30 giorni / Mediano)
+            reference_price = 0.0
+            reference_label = ""
+            
+            m_basis = re.search(r'(Prezzo (?:consigliato|più basso recente|mediano))[^0-9€]*([0-9.,]+)\s*(?:€|&euro;)', html, re.I)
+            if m_basis:
+                reference_label = m_basis.group(1).strip()
+                ref_p = parse_price_str(m_basis.group(2))
+                if ref_p:
+                    reference_price = ref_p
+            
+            if reference_price == 0.0:
+                m_span_basis = re.search(r'class=[\"\'][^\"\']*basisPrice[^\"\']*[\"\'][^>]*>.*?class=[\"\']a-offscreen[\"\']>([0-9.,]+)\s*(?:€|&euro;)', html, re.S | re.I)
+                if m_span_basis:
+                    ref_p = parse_price_str(m_span_basis.group(1))
+                    if ref_p:
+                        reference_price = ref_p
+                        reference_label = "Prezzo consigliato"
+
+            # Se abbiamo il prezzo di riferimento, calcoliamo lo sconto reale garantito
+            if reference_price > price > 0.0:
+                real_disc = round(((reference_price - price) / reference_price) * 100, 0)
+                if discount_pct == 0.0:
+                    discount_pct = real_disc
+
+            keepa_graph_url = f"https://graph.keepa.com/pricehistory.png?asin={asin}&domain=it"
+
             return {
                 "success": price > 0.0,
                 "asin": asin,
                 "title": title or "Prodotto Amazon",
                 "price": price,
+                "reference_price": reference_price,
+                "reference_label": reference_label,
                 "discount_pct": discount_pct,
                 "deal_badge": deal_badge,
+                "keepa_graph_url": keepa_graph_url,
                 "is_available": is_available,
                 "url": url,
                 "error": None if price > 0.0 else "Prezzo non trovato"

@@ -105,9 +105,15 @@ async def process_message(event_or_msg, chat_title: str, storage: DealStorage, n
             print(f"[{chat_title}] ASIN {asin} scartato: nessun utente ha filtri corrispondenti a '{title[:35]}'.")
             continue
 
+        # Verifica se è un nuovo minimo rispetto allo storico registrato dal bot
+        is_new_low, prev_low = storage.check_and_record_low(asin, price)
+        ref_price = prod.get("reference_price", 0.0)
+        ref_label = prod.get("reference_label", "")
+        graph_url = prod.get("keepa_graph_url", "")
+
         print(f"🚨 [ALERT CONFERMATO] {title} a {price:.2f}€ (-{discount}%)! Invio a {len(recipients)} destinatari...")
 
-        # Invia notifica sul Bot Telegram con tag affiliazione e link Keepa
+        # Invia notifica sul Bot Telegram con tag affiliazione, grafico Keepa e confronto storico
         snippet = msg_text.split("\n")[0] if msg_text else ""
         notifier.send_deal_alert(
             title=title,
@@ -116,6 +122,11 @@ async def process_message(event_or_msg, chat_title: str, storage: DealStorage, n
             deal_badge=badge or ("Errore Prezzo" if is_error_flagged else "Super Offerta"),
             asin=asin,
             channel_name=chat_title,
+            reference_price=ref_price,
+            reference_label=ref_label,
+            is_new_low=is_new_low,
+            previous_low=prev_low,
+            keepa_graph_url=graph_url,
             original_msg_snippet=snippet,
             chat_ids=recipients
         )

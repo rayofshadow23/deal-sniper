@@ -3,24 +3,52 @@ import requests
 from typing import Dict, Any, List, Optional
 from storage import DealStorage
 
+def register_bot_commands(base_url: str):
+    """
+    Registra i comandi ufficiali nel pulsante Menu nativo di Telegram (in basso a sinistra nella chat).
+    """
+    commands = [
+        {"command": "menu", "description": "📱 Mostra il menu principale"},
+        {"command": "filter", "description": "🔍 Mostra o imposta i filtri (es. /filter ssd, nvme)"},
+        {"command": "all", "description": "🔓 Ricevi tutte le offerte senza filtri"},
+        {"command": "status", "description": "📊 Canali monitorati e stato bot"},
+        {"command": "help", "description": "❓ Guida all'uso e spiegazione"}
+    ]
+    try:
+        r = requests.post(f"{base_url}/setMyCommands", json={"commands": commands}, timeout=6)
+        if r.status_code == 200:
+            print("✅ [BOT LISTENER] Menu comandi Telegram registrato con successo (setMyCommands).")
+    except Exception as e:
+        print(f"[BOT LISTENER WARN] Impossibile registrare setMyCommands: {e}")
+
+DEFAULT_KEYBOARD = {
+    "keyboard": [
+        [{"text": "🔍 I Miei Filtri"}, {"text": "🔓 Ricevi Tutto"}],
+        [{"text": "📊 Canali & Stato"}, {"text": "❓ Guida & Comandi"}]
+    ],
+    "resize_keyboard": True,
+    "persistent": True
+}
+
 async def run_bot_listener(bot_token: str, storage: DealStorage, config: dict):
     """
     Ascolta i comandi Telegram inviati dagli utenti al bot via getUpdates long-polling.
-    Permette a ogni utente di impostare i propri filtri (/filter ssd, nvme o /filter all).
+    Permette a ogni utente di interagire tramite menu o comandi testuali.
     """
     if not bot_token or ":" not in bot_token:
         print("[BOT LISTENER] Token bot non valido o non configurato, listener interattivo disabilitato.")
         return
 
     base_url = f"https://api.telegram.org/bot{bot_token}"
+    register_bot_commands(base_url)
+
     offset = 0
     default_kw = config.get("filters", {}).get("keywords", [])
 
-    print("🤖 [BOT LISTENER] Listener comandi utente avviato (/filter, /status, /help)...")
+    print("🤖 [BOT LISTENER] Listener comandi utente avviato (/menu, /filter, /status, /help)...")
 
     while True:
         try:
-            # Esegui la richiesta getUpdates con timeout per non bloccare l'event loop
             loop = asyncio.get_running_loop()
             resp = await loop.run_in_executor(
                 None,
@@ -58,24 +86,26 @@ async def run_bot_listener(bot_token: str, storage: DealStorage, config: dict):
 
 def handle_command(base_url: str, chat_id: int, text: str, storage: DealStorage, default_kw: list, config: dict):
     """Elabora i messaggi ricevuti dal bot Telegram."""
-    lower = text.lower()
+    lower = text.lower().strip()
 
-    if lower.startswith("/start") or lower.startswith("/help"):
+    # 1. Menu Principale, Start e Help
+    if lower in ["/start", "/help", "❓ guida & comandi", "/menu", "📱 menu"]:
         reply = (
-            "👋 <b>Ciao! Sono Deal Sniper Bot</b>\n\n"
-            "Monitoro i canali di offerte ed errori di prezzo Amazon in tempo reale.\n\n"
-            "🎯 <b>Come filtrare i prodotti desiderati:</b>\n"
-            "• <code>/filter ssd, nvme</code> : Notifiche solo se il prodotto contiene queste parole\n"
-            "• <code>/filter all</code> : Ricevi <b>TUTTE</b> le offerte ed errori (senza filtri)\n"
-            "• <code>/filter</code> : Visualizza i tuoi filtri attivi\n\n"
-            "<i>Puoi anche scrivere direttamente le parole separate da virgola (es. 'ssd, nvme')!</i>\n\n"
-            "📊 <b>Altri comandi:</b>\n"
-            "• <code>/status</code> : Mostra i canali monitorati e stato del bot"
+            "🎯 <b>BENVENUTO IN DEAL SNIPER BOT!</b>\n\n"
+            "Monitoro i canali Telegram di offerte ed errori di prezzo Amazon in tempo reale.\n\n"
+            "📋 <b>MENU COMANDI DISPONIBILI:</b>\n\n"
+            "• <code>/filter ssd, nvme</code> : Imposta parole chiave (notifica solo quei prodotti)\n"
+            "• <code>/all</code> : Rimuove i filtri e ricevi <b>TUTTE</b> le offerte ed errori\n"
+            "• <code>/filter</code> : Visualizza i filtri attualmente attivi per la tua chat\n"
+            "• <code>/status</code> : Canali monitorati e stato del bot\n"
+            "• <code>/menu</code> : Riapre questo menu rapido\n\n"
+            "<i>💡 Suggerimento: Puoi anche scrivere direttamente una o più parole chiave separate da virgola (es. <code>ssd, nvme, lego</code>)!</i>"
         )
-        send_reply(base_url, chat_id, reply)
+        send_reply(base_url, chat_id, reply, reply_markup=DEFAULT_KEYBOARD)
         return
 
-    if lower.startswith("/status"):
+    # 2. Status & Canali Monitorati
+    if lower in ["/status", "📊 canali & stato"]:
         channels = config.get("telegram_scraper", {}).get("channels", [])
         kw = storage.get_user_keywords(chat_id)
         if kw is None:
@@ -86,43 +116,47 @@ def handle_command(base_url: str, chat_id: int, text: str, storage: DealStorage,
             f_str = ", ".join(kw)
 
         reply = (
-            "📊 <b>STATO DEAL SNIPER:</b>\n\n"
+            "📊 <b>STATO MONITORAGGIO:</b>\n\n"
             f"📡 <b>Canali monitorati ({len(channels)}):</b>\n"
             + "\n".join(f"• @{ch}" for ch in channels) + "\n\n"
-            f"🎯 <b>Il tuo filtro attivo:</b> <code>{f_str}</code>\n"
+            f"🎯 <b>Il tuo filtro attuale:</b> <code>{f_str}</code>\n"
             f"👤 <b>Il tuo Chat ID:</b> <code>{chat_id}</code>"
         )
-        send_reply(base_url, chat_id, reply)
+        send_reply(base_url, chat_id, reply, reply_markup=DEFAULT_KEYBOARD)
         return
 
-    # Gestione /filter o testo libero
-    if lower.startswith("/filter"):
-        args = text[7:].strip()
-    elif not text.startswith("/"):
-        # Se l'utente scrive semplicemente testo libero come "ssd" o "ssd, nvme" o "all"
-        args = text.strip()
-    else:
+    # 3. Ricevi Tutto (/all o bottone)
+    if lower in ["/all", "🔓 ricevi tutto", "all", "tutto", "tutti", "reset", "clear"]:
+        storage.set_user_keywords(chat_id, [])
+        send_reply(
+            base_url,
+            chat_id,
+            "✅ <b>Filtri azzerati!</b> Da adesso riceverai <b>TUTTE</b> le offerte e gli errori di prezzo senza distinzione.",
+            reply_markup=DEFAULT_KEYBOARD
+        )
         return
 
-    if not args:
-        # Mostra i filtri attuali
+    # 4. Visualizzazione Filtri Attuali
+    if lower in ["/filter", "🔍 i miei filtri"]:
         kw = storage.get_user_keywords(chat_id)
         if kw is None:
-            msg = f"ℹ️ Non hai impostato filtri personalizzati.\nStai usando i filtri predefiniti del server: <b>{', '.join(default_kw) if default_kw else 'TUTTO'}</b>."
+            msg = f"ℹ️ Non hai ancora impostato filtri personali.\nStai usando la configurazione predefinita del server: <b>{', '.join(default_kw) if default_kw else 'TUTTO'}</b>."
         elif not kw:
             msg = "ℹ️ Sei impostato su <b>TUTTO</b>: riceverai ogni offerta ed errore di prezzo senza filtri."
         else:
             msg = f"🎯 <b>I tuoi filtri attivi attuali:</b>\n" + "\n".join(f"• <code>{k}</code>" for k in kw)
-        msg += "\n\nPer modificarli: <code>/filter ssd, nvme</code>\nPer ricevere tutto: <code>/filter all</code>"
-        send_reply(base_url, chat_id, msg)
+        msg += "\n\nPer modificarli: <code>/filter ssd, nvme</code>\nPer ricevere tutto: <code>/all</code>"
+        send_reply(base_url, chat_id, msg, reply_markup=DEFAULT_KEYBOARD)
         return
 
-    if args.lower() in ["all", "tutto", "tutti", "reset", "clear"]:
-        storage.set_user_keywords(chat_id, [])
-        send_reply(base_url, chat_id, "✅ <b>Filtri rimossi!</b> Ora riceverai <b>TUTTE</b> le offerte ed errori di prezzo pubblicati.")
+    # 5. Impostazione Filtri con argomenti
+    if lower.startswith("/filter"):
+        args = text[7:].strip()
+    elif not text.startswith("/"):
+        args = text.strip()
+    else:
         return
 
-    # Imposta le parole chiave
     raw_list = [k.strip().lower() for k in args.split(",") if k.strip()]
     if raw_list:
         storage.set_user_keywords(chat_id, raw_list)
@@ -130,17 +164,16 @@ def handle_command(base_url: str, chat_id: int, text: str, storage: DealStorage,
         reply = (
             "✅ <b>Filtro prodotti aggiornato con successo!</b>\n\n"
             f"Riceverai notifiche solo per offerte o errori che contengono:\n{bullet_list}\n\n"
-            "<i>(Per tornare a ricevere tutto in qualsiasi momento, scrivi <code>/filter all</code>)</i>"
+            "<i>(Per tornare a ricevere tutto, premi '🔓 Ricevi Tutto' o digita <code>/all</code>)</i>"
         )
-        send_reply(base_url, chat_id, reply)
+        send_reply(base_url, chat_id, reply, reply_markup=DEFAULT_KEYBOARD)
 
-def send_reply(base_url: str, chat_id: int, text: str):
-    """Invia un messaggio di risposta veloce."""
+def send_reply(base_url: str, chat_id: int, text: str, reply_markup: Optional[dict] = None):
+    """Invia un messaggio di risposta con eventuale tastiera menu."""
     try:
-        requests.post(
-            f"{base_url}/sendMessage",
-            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
-            timeout=8
-        )
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        requests.post(f"{base_url}/sendMessage", json=payload, timeout=8)
     except Exception as e:
         print(f"[BOT LISTENER ERROR] Impossibile inviare risposta a {chat_id}: {e}")

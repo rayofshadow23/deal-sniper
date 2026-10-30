@@ -90,6 +90,22 @@ class DealStorage:
             )
             conn.commit()
 
+    def check_and_record_low(self, asin: str, price: float) -> Tuple[bool, Optional[float]]:
+        """
+        Controlla se il prezzo attuale è inferiore a quello precedentemente registrato nel database.
+        Restituisce (is_new_low, previous_low).
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT price FROM alerted_deals WHERE asin = ?", (asin,))
+            row = cursor.fetchone()
+            if not row:
+                return False, None
+            prev_price = row[0]
+            if price < prev_price:
+                return True, prev_price
+            return False, prev_price
+
     def get_user_keywords(self, chat_id: int) -> Optional[list]:
         """
         Restituisce:

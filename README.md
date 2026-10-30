@@ -5,8 +5,15 @@ Bot autonomo e leggero in Python per il monitoraggio in tempo reale degli **erro
 Appena un canale segnala un'offerta o un errore di prezzo, il bot:
 1. Cattura il messaggio in tempo reale tramite **Telethon**.
 2. Risolve i redirect dei link affiliati (`amzn.to`, `amzlink.to`, ecc.) ed estrae l'**ASIN**.
-3. Verifica all'istante la pagina Amazon reale per accertarsi che il prezzo sia **ancora attivo** e il prodotto **disponibile**.
-4. Invia una notifica istantanea sul tuo **bot Telegram personale** con il link diretto per l'acquisto rapido.
+3. Verifica all'istante la pagina Amazon reale:
+   - Controlla disponibilità e prezzo attuale.
+   - Estrae il **Prezzo di riferimento / Prezzo più basso ultimi 30 giorni** per calcolare il vero risparmio reale (evitando i falsi sconti).
+   - Genera il link al **grafico storico prezzi di Keepa** (`graph.keepa.com`).
+4. Invia una notifica istantanea sul tuo **bot Telegram personale**:
+   - Allega la **foto del grafico storico prezzi di Keepa** degli ultimi 90 giorni.
+   - Indica il prezzo attuale, il prezzo consigliato/30gg e il risparmio reale in €.
+   - Segnala se il prezzo è un **Nuovo Minimo Rilevato** rispetto allo storico.
+   - Fornisce i pulsanti rapidi con il tuo tag di affiliazione per l'acquisto immediato.
 5. Memorizza l'evento in **SQLite** per prevenire notifiche duplicate e spam.
 
 > **Zero costi & Zero Token**: Funziona al 100% in locale con librerie Python standard e gratuite. Nessun consumo di crediti LLM.
