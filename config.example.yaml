@@ -27,7 +27,12 @@ telegram_bot:
   alert_chat_ids:
     - 123456789
 
-# 3. Filtri e Criteri di Notifica
+# 3. Impostazioni Amazon & Affiliazione
+amazon:
+  # Il tag di affiliazione aggiunto automaticamente a tutti i link Amazon
+  affiliate_tag: "esplorandodin-21"
+
+# 4. Filtri e Criteri di Notifica
 filters:
   # Se True: controlla qualsiasi link Amazon trovato nel canale
   # Se False: controlla solo i post che contengono parole come "errore", "bug", "minimo", "bomba"

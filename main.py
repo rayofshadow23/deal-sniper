@@ -93,15 +93,14 @@ async def process_message(event_or_msg, chat_title: str, storage: DealStorage, n
 
         print(f"🚨 [ALERT CONFERMATO] {title} a {price:.2f}€ (-{discount}%)! Invio notifica...")
 
-        # Invia notifica sul Bot Telegram
-        clean_url = f"https://www.amazon.it/dp/{asin}"
+        # Invia notifica sul Bot Telegram con tag affiliazione e link Keepa
         snippet = msg_text.split("\n")[0] if msg_text else ""
         notifier.send_deal_alert(
             title=title,
             price=price,
             discount_pct=discount,
             deal_badge=badge or ("Errore Prezzo" if is_error_flagged else "Super Offerta"),
-            amazon_url=clean_url,
+            asin=asin,
             channel_name=chat_title,
             original_msg_snippet=snippet
         )
@@ -130,8 +129,9 @@ async def main():
     if not bot_token or not alert_chat_ids:
         print("[AVVISO] Bot token o alert_chat_ids mancanti in config.yaml. Non riceverai notifiche.")
 
-    storage = DealStorage(config.get("database", {}).get("path", "deals.db"))
-    notifier = TelegramBotNotifier(token=bot_token, default_chat_ids=alert_chat_ids)
+    affiliate_tag = config.get("amazon", {}).get("affiliate_tag", "esplorandodin-21")
+    storage = DealStorage(config.get("database", {}).get("path", "data/deals.db"))
+    notifier = TelegramBotNotifier(token=bot_token, default_chat_ids=alert_chat_ids, affiliate_tag=affiliate_tag)
 
     print("═══════════════════════════════════════════════════════════")
     print("🚀 DEAL SNIPER & ERROR POLLED BOT (Telethon + Amazon)")

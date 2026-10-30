@@ -2,9 +2,10 @@ import requests
 from typing import Optional, List, Dict, Any
 
 class TelegramBotNotifier:
-    def __init__(self, token: str, default_chat_ids: List[int]):
+    def __init__(self, token: str, default_chat_ids: List[int], affiliate_tag: str = "esplorandodin-21"):
         self.token = token.strip()
         self.default_chat_ids = default_chat_ids
+        self.affiliate_tag = affiliate_tag.strip() if affiliate_tag else ""
         self.base_url = f"https://api.telegram.org/bot{self.token}"
 
     def send_deal_alert(
@@ -13,16 +14,21 @@ class TelegramBotNotifier:
         price: float,
         discount_pct: float,
         deal_badge: str,
-        amazon_url: str,
+        asin: str,
         channel_name: str,
+        amazon_url: str = "",
         original_msg_snippet: str = "",
         chat_ids: Optional[List[int]] = None
     ) -> bool:
-        """Invia un messaggio di notifica offerta formattato in HTML."""
+        """Invia un messaggio di notifica offerta formattato in HTML con link Keepa e tag affiliazione."""
         targets = chat_ids or self.default_chat_ids
         if not self.token or not targets:
             print("[NOTIFIER] Token o chat_ids mancanti, alert saltato.")
             return False
+
+        tag_param = f"?tag={self.affiliate_tag}" if self.affiliate_tag else ""
+        final_amazon_url = f"https://www.amazon.it/dp/{asin}{tag_param}" if asin else amazon_url
+        keepa_url = f"https://keepa.com/#!product/8-{asin}" if asin else ""
 
         badge_str = f" 🔥 <b>{deal_badge}</b>" if deal_badge else ""
         discount_str = f" (📉 <b>-{int(discount_pct)}%</b>)" if discount_pct > 0 else ""
@@ -36,21 +42,26 @@ class TelegramBotNotifier:
             f"💰 <b>Prezzo Attuale:</b> {price:.2f} €{discount_str}\n"
             f"📡 <b>Canale:</b> {channel_name}\n"
         )
+        if keepa_url:
+            msg += f"📊 <b>Storico:</b> <a href=\"{keepa_url}\">Grafico prezzi su Keepa</a>\n"
+
         if original_msg_snippet:
             clean_snippet = original_msg_snippet.replace("<", "&lt;").replace(">", "&gt;")[:150]
             msg += f"💬 <i>\"{clean_snippet}\"</i>\n"
 
-        # Inline button per aprire subito Amazon
+        # Pulsanti inline (Amazon con tag affiliazione + Keepa)
+        buttons = [
+            {"text": "🛒 Apri su Amazon", "url": final_amazon_url}
+        ]
+        if keepa_url:
+            buttons.append({"text": "📈 Grafico Keepa", "url": keepa_url})
+
         payload: Dict[str, Any] = {
             "parse_mode": "HTML",
             "text": msg,
             "disable_web_page_preview": False,
             "reply_markup": {
-                "inline_keyboard": [
-                    [
-                        {"text": "🛒 Apri su Amazon", "url": amazon_url}
-                    ]
-                ]
+                "inline_keyboard": [buttons]
             }
         }
 
