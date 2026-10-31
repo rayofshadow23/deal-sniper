@@ -108,6 +108,7 @@ def handle_command(base_url: str, chat_id: int, text: str, storage: DealStorage,
 
     # Rileva link Amazon incollati dall'utente e risponde con prezzo + grafico Keepa
     links = extract_links_from_text(text)
+    print(f"[BOT LISTENER DEBUG] text={text[:80]} links={links}")
     amazon_links = [l for l in links if 'amazon' in l.lower() or 'amzn' in l.lower()]
     if amazon_links:
         for link in amazon_links:
