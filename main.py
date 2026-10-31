@@ -4,8 +4,9 @@ import sys
 import re
 import yaml
 from telethon import TelegramClient, events
+from telethon.tl.functions.channels import JoinChannelRequest
 from storage import DealStorage
-from amazon_scraper import extract_links_from_text, resolve_amazon_link, fetch_amazon_product
+from amazon_scraper import extract_links_from_telethon_message, resolve_amazon_link, fetch_amazon_product
 from bot_notifier import TelegramBotNotifier
 from bot_listener import run_bot_listener
 
@@ -29,16 +30,23 @@ def contains_deal_keywords(text: str) -> bool:
     lower = text.lower()
     return any(kw in lower for kw in DEAL_KEYWORDS)
 
-async def process_message(event_or_msg, chat_title: str, storage: DealStorage, notifier: TelegramBotNotifier, config: dict):
+async def process_message(event_or_msg, chat_title: str, storage: DealStorage, notifier: TelegramBotNotifier, config: dict, chat_username: str = ""):
     msg_text = getattr(event_or_msg, "message", "") or ""
     chat_id = event_or_msg.chat_id
     msg_id = event_or_msg.id
+
+    if not chat_username:
+        chat = getattr(event_or_msg, "chat", None)
+        if chat:
+            chat_username = getattr(chat, "username", "") or ""
+
+    post_url = f"https://t.me/{chat_username}/{msg_id}" if chat_username and msg_id else ""
 
     if storage.is_message_processed(chat_id, msg_id):
         return
     storage.mark_message_processed(chat_id, msg_id)
 
-    links = extract_links_from_text(msg_text)
+    links = extract_links_from_telethon_message(event_or_msg)
     if not links:
         return
 
@@ -111,9 +119,23 @@ async def process_message(event_or_msg, chat_title: str, storage: DealStorage, n
         ref_label = prod.get("reference_label", "")
         graph_url = prod.get("keepa_graph_url", "")
 
+        # Scarica l'immagine originale del prodotto dal canale Telegram (se presente)
+        prod_image_bytes = None
+        is_image = bool(getattr(event_or_msg, "photo", None))
+        if not is_image and getattr(event_or_msg, "document", None):
+            mime = getattr(event_or_msg.document, "mime_type", "") or ""
+            if mime.startswith("image/"):
+                is_image = True
+
+        if is_image:
+            try:
+                prod_image_bytes = await event_or_msg.download_media(file=bytes)
+            except Exception as e:
+                print(f"[{chat_title}] Errore download immagine dal messaggio originale: {e}")
+
         print(f"🚨 [ALERT CONFERMATO] {title} a {price:.2f}€ (-{discount}%)! Invio a {len(recipients)} destinatari...")
 
-        # Invia notifica sul Bot Telegram con tag affiliazione, grafico Keepa e confronto storico
+        # Invia notifica sul Bot Telegram (album con foto prodotto + grafico Keepa e pulsanti inline)
         snippet = msg_text.split("\n")[0] if msg_text else ""
         notifier.send_deal_alert(
             title=title,
@@ -128,11 +150,27 @@ async def process_message(event_or_msg, chat_title: str, storage: DealStorage, n
             previous_low=prev_low,
             keepa_graph_url=graph_url,
             original_msg_snippet=snippet,
-            chat_ids=recipients
+            chat_ids=recipients,
+            channel_username=chat_username,
+            post_url=post_url,
+            product_image_bytes=prod_image_bytes
         )
 
         # Registra alert nel database
         storage.record_alert(asin, title, price, discount, chat_title)
+
+async def background_catchup_loop(client, entities, storage, notifier, config):
+    """Loop di polling di recupero ogni 90 secondi per garantire zero messaggi persi."""
+    while True:
+        await asyncio.sleep(90)
+        for entity in entities:
+            try:
+                title = getattr(entity, "title", getattr(entity, "username", "Canale"))
+                username = getattr(entity, "username", "") or ""
+                async for msg in client.iter_messages(entity, limit=5):
+                    await process_message(msg, title, storage, notifier, config, chat_username=username)
+            except Exception:
+                pass
 
 async def main():
     config = load_config("config.yaml")
@@ -170,29 +208,56 @@ async def main():
 
     print("✅ Connessione Telegram Scraper attiva!")
 
-    # Avvia il listener comandi del bot (/filter, /status, ecc.) in background
-    if bot_token:
-        asyncio.create_task(run_bot_listener(bot_token, storage, config))
+    # Recupera i dialoghi attuali per verificare quali canali sono già iscritti
+    dialogs = await client.get_dialogs()
+    joined_ids = {d.id for d in dialogs}
+    resolved_channels = []
 
-    # Registra listener per nuovi messaggi in tempo reale
-    @client.on(events.NewMessage(chats=channels))
-    async def handler(event):
-        chat = await event.get_chat()
-        chat_title = getattr(chat, "title", getattr(chat, "username", "Canale"))
-        await process_message(event.message, chat_title, storage, notifier, config)
-
-    # Scansione iniziale degli ultimi messaggi su ogni canale (catch-up)
-    print("🔍 Controllo messaggi recenti sui canali...")
+    print("🔍 Verifica iscrizione e sincronizzazione canali...")
     for ch in channels:
         try:
             entity = await client.get_entity(ch)
             title = getattr(entity, "title", getattr(entity, "username", str(ch)))
-            async for msg in client.iter_messages(entity, limit=5):
-                await process_message(msg, title, storage, notifier, config)
+            if entity.id not in joined_ids:
+                try:
+                    await client(JoinChannelRequest(entity))
+                    print(f"  ➕ Iscrizione automatica al canale: {title} (@{ch})")
+                except Exception as ej:
+                    print(f"  ⚠️ Impossibile iscrivere automaticamente a {title}: {ej}")
+            else:
+                print(f"  ✅ Già iscritto a: {title}")
+            resolved_channels.append(entity)
         except Exception as e:
-            print(f"[WARN] Impossibile recuperare ultimi messaggi da {ch}: {e}")
+            print(f"[WARN] Impossibile recuperare il canale {ch}: {e}")
 
-    print("⚡ In ascolto per nuovi messaggi in tempo reale (Ctrl+C per fermare)...")
+    # Avvia il listener comandi del bot (/filter, /status, ecc.) in background
+    if bot_token:
+        asyncio.create_task(run_bot_listener(bot_token, storage, config))
+
+    # Avvia il loop di recupero in background (polling periodico di sicurezza)
+    if resolved_channels:
+        asyncio.create_task(background_catchup_loop(client, resolved_channels, storage, notifier, config))
+
+    # Registra listener per nuovi messaggi in tempo reale (Push a zero secondi)
+    @client.on(events.NewMessage(chats=resolved_channels))
+    async def handler(event):
+        chat = await event.get_chat()
+        chat_title = getattr(chat, "title", getattr(chat, "username", "Canale"))
+        chat_username = getattr(chat, "username", "") or ""
+        await process_message(event.message, chat_title, storage, notifier, config, chat_username=chat_username)
+
+    # Scansione iniziale degli ultimi messaggi su ogni canale (catch-up immediato)
+    print("🔍 Controllo messaggi recenti sui canali...")
+    for entity in resolved_channels:
+        try:
+            title = getattr(entity, "title", getattr(entity, "username", "Canale"))
+            username = getattr(entity, "username", "") or ""
+            async for msg in client.iter_messages(entity, limit=5):
+                await process_message(msg, title, storage, notifier, config, chat_username=username)
+        except Exception as e:
+            print(f"[WARN] Impossibile recuperare ultimi messaggi da {entity}: {e}")
+
+    print("⚡ In ascolto per nuovi messaggi in tempo reale e polling di sicurezza attivo...")
     await client.run_until_disconnected()
 
 if __name__ == "__main__":

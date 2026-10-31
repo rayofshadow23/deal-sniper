@@ -1,3 +1,4 @@
+import json
 import requests
 from typing import Optional, List, Dict, Any
 
@@ -23,9 +24,12 @@ class TelegramBotNotifier:
         keepa_graph_url: str = "",
         amazon_url: str = "",
         original_msg_snippet: str = "",
-        chat_ids: Optional[List[int]] = None
+        chat_ids: Optional[List[int]] = None,
+        channel_username: str = "",
+        post_url: str = "",
+        product_image_bytes: Optional[bytes] = None
     ) -> bool:
-        """Invia un messaggio di notifica offerta allegando il grafico storico prezzi di Keepa."""
+        """Invia una notifica offerta. Se presente la foto del prodotto nel canale, invia un album (foto prodotto + grafico Keepa)."""
         targets = chat_ids or self.default_chat_ids
         if not self.token or not targets:
             print("[NOTIFIER] Token o chat_ids mancanti, alert saltato.")
@@ -39,11 +43,18 @@ class TelegramBotNotifier:
         badge_str = f" 🔥 <b>{deal_badge}</b>" if deal_badge else ""
         discount_str = f" (📉 <b>-{int(discount_pct)}%</b>)" if discount_pct > 0 else ""
         
+        # Formattazione nome canale (solo testo informativo, senza link al post)
+        if channel_username:
+            channel_display = f"{channel_name} (@{channel_username})"
+        else:
+            channel_display = channel_name
+
         # Tronca titolo per stare comodamente nel limite caption di Telegram (1024 caratteri)
         display_title = (title[:110] + "...") if len(title) > 110 else title
 
         msg = (
-            f"🚨 <b>ERRORE DI PREZZO / SUPER OFFERTA!</b>{badge_str}\n\n"
+            f"🚨 <b>OFFERTA RILEVATA!</b>{badge_str}\n"
+            f"📡 <b>Canale:</b> {channel_display}\n\n"
             f"📦 <b>{display_title}</b>\n\n"
             f"💰 <b>Prezzo Attuale:</b> {price:.2f} €{discount_str}\n"
         )
@@ -56,13 +67,11 @@ class TelegramBotNotifier:
         if is_new_low and previous_low:
             msg += f"🎉 <b>Nuovo Minimo Rilevato!</b> (Precedente: {previous_low:.2f} €)\n"
 
-        msg += f"📡 <b>Canale:</b> {channel_name}\n"
-
         if original_msg_snippet:
             clean_snippet = original_msg_snippet.replace("<", "&lt;").replace(">", "&gt;")[:120]
-            msg += f"💬 <i>\"{clean_snippet}\"</i>\n"
+            msg += f"\n💬 <i>\"{clean_snippet}\"</i>\n"
 
-        # Pulsanti inline (Amazon affiliato + Keepa)
+        # Pulsanti inline (solo Amazon affiliato e Grafico Keepa)
         buttons = [
             {"text": "🛒 Apri su Amazon", "url": final_amazon_url}
         ]
@@ -70,29 +79,133 @@ class TelegramBotNotifier:
             buttons.append({"text": "📈 Grafico Keepa", "url": keepa_url})
 
         reply_markup = {"inline_keyboard": [buttons]}
+
+        # Pre-scarica il grafico Keepa con User-Agent idoneo per evitare blocchi/403
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        keepa_bytes = None
+        if photo_url:
+            try:
+                r = requests.get(photo_url, headers=headers, timeout=6)
+                if r.status_code == 200 and r.content and r.headers.get("content-type", "").startswith("image/"):
+                    keepa_bytes = r.content
+            except Exception as e:
+                print(f"[NOTIFIER] Impossibile scaricare grafico Keepa: {e}")
+
         success = True
 
         for chat_id in targets:
             sent = False
-            # 1. Prova a inviare come sendPhoto con il grafico Keepa
-            if photo_url:
-                try:
-                    photo_payload = {
-                        "chat_id": chat_id,
-                        "photo": photo_url,
-                        "caption": msg,
-                        "parse_mode": "HTML",
-                        "reply_markup": reply_markup
-                    }
-                    resp = requests.post(f"{self.base_url}/sendPhoto", json=photo_payload, timeout=12)
-                    if resp.status_code == 200:
-                        sent = True
-                    else:
-                        print(f"[NOTIFIER] sendPhoto a {chat_id} non riuscito ({resp.status_code}), ripiego su sendMessage...")
-                except Exception as e:
-                    print(f"[NOTIFIER] Eccezione sendPhoto: {e}")
 
-            # 2. Se sendPhoto fallisce o non c'è foto, usa sendMessage standard
+            # 1. Opzione Preferita: Album Telegram (MediaGroup con Foto Prodotto + Grafico Keepa)
+            if product_image_bytes and (keepa_bytes or photo_url):
+                try:
+                    files = {
+                        "prod_img": ("product.jpg", product_image_bytes, "image/jpeg")
+                    }
+                    media_group = [
+                        {
+                            "type": "photo",
+                            "media": "attach://prod_img",
+                            "caption": msg,
+                            "parse_mode": "HTML"
+                        }
+                    ]
+
+                    if keepa_bytes:
+                        files["keepa_graph"] = ("keepa.png", keepa_bytes, "image/png")
+                        media_group.append({
+                            "type": "photo",
+                            "media": "attach://keepa_graph"
+                        })
+                    else:
+                        media_group.append({
+                            "type": "photo",
+                            "media": photo_url
+                        })
+
+                    res = requests.post(
+                        f"{self.base_url}/sendMediaGroup",
+                        data={"chat_id": chat_id, "media": json.dumps(media_group)},
+                        files=files,
+                        timeout=15
+                    )
+
+                    if res.status_code == 200:
+                        sent = True
+                        # Telegram non supporta pulsanti inline direttamente sotto un MediaGroup;
+                        # inviamo un brevissimo messaggio di servizio con i bottoni interattivi
+                        btn_msg = f"⚡ <b>Azioni rapide:</b> {display_title}"
+                        try:
+                            requests.post(
+                                f"{self.base_url}/sendMessage",
+                                json={
+                                    "chat_id": chat_id,
+                                    "text": btn_msg,
+                                    "parse_mode": "HTML",
+                                    "reply_markup": reply_markup
+                                },
+                                timeout=8
+                            )
+                        except Exception as be:
+                            print(f"[NOTIFIER] Errore invio bottoni dopo MediaGroup: {be}")
+                    else:
+                        print(f"[NOTIFIER] sendMediaGroup a {chat_id} fallito ({res.status_code}: {res.text[:100]}), ripiego...")
+                except Exception as e:
+                    print(f"[NOTIFIER] Eccezione sendMediaGroup: {e}")
+
+            # 2. Se MediaGroup non applicabile o fallito, prova sendPhoto singola
+            if not sent:
+                # Prova con la foto del prodotto dal canale
+                if product_image_bytes:
+                    try:
+                        files = {"photo": ("product.jpg", product_image_bytes, "image/jpeg")}
+                        data = {
+                            "chat_id": chat_id,
+                            "caption": msg,
+                            "parse_mode": "HTML",
+                            "reply_markup": json.dumps(reply_markup)
+                        }
+                        res = requests.post(f"{self.base_url}/sendPhoto", data=data, files=files, timeout=12)
+                        if res.status_code == 200:
+                            sent = True
+                    except Exception as pe:
+                        print(f"[NOTIFIER] Eccezione sendPhoto (prod_img): {pe}")
+
+                # Oppure prova con i bytes del grafico Keepa
+                elif keepa_bytes:
+                    try:
+                        files = {"photo": ("keepa.png", keepa_bytes, "image/png")}
+                        data = {
+                            "chat_id": chat_id,
+                            "caption": msg,
+                            "parse_mode": "HTML",
+                            "reply_markup": json.dumps(reply_markup)
+                        }
+                        res = requests.post(f"{self.base_url}/sendPhoto", data=data, files=files, timeout=12)
+                        if res.status_code == 200:
+                            sent = True
+                    except Exception as pe:
+                        print(f"[NOTIFIER] Eccezione sendPhoto (keepa_bytes): {pe}")
+
+                # Oppure con l'URL remoto del grafico Keepa
+                elif photo_url:
+                    try:
+                        photo_payload = {
+                            "chat_id": chat_id,
+                            "photo": photo_url,
+                            "caption": msg,
+                            "parse_mode": "HTML",
+                            "reply_markup": reply_markup
+                        }
+                        resp = requests.post(f"{self.base_url}/sendPhoto", json=photo_payload, timeout=12)
+                        if resp.status_code == 200:
+                            sent = True
+                    except Exception as pe:
+                        print(f"[NOTIFIER] Eccezione sendPhoto (photo_url): {pe}")
+
+            # 3. Fallback finale solo testo
             if not sent:
                 try:
                     text_payload = {

@@ -70,13 +70,29 @@ async def run_bot_listener(bot_token: str, storage: DealStorage, config: dict):
 
             for update in data.get("result", []):
                 offset = update["update_id"] + 1
-                msg = update.get("message")
-                if not msg or "text" not in msg:
+                
+                # Rileva aggiunta del bot come admin in un canale o gruppo
+                if "my_chat_member" in update:
+                    mcm = update["my_chat_member"]
+                    c = mcm.get("chat", {})
+                    print(f"📢 [CANALE/GRUPPO RILEVATO] Titolo: '{c.get('title')}' | ID: {c.get('id')}")
+
+                # Rileva post in canali (channel_post) o messaggi normali (message)
+                msg = update.get("message") or update.get("channel_post")
+                if not msg:
                     continue
 
-                chat_id = msg["chat"]["id"]
-                text = msg["text"].strip()
-                handle_command(base_url, chat_id, text, storage, default_kw, config)
+                chat = msg.get("chat", {})
+                chat_id = chat.get("id")
+                chat_type = chat.get("type", "")
+                chat_title = chat.get("title", "")
+                text = msg.get("text", "").strip()
+
+                if chat_type in ["channel", "supergroup", "group"]:
+                    print(f"📢 [MESSAGGIO IN CANALE/GRUPPO] Titolo: '{chat_title}' | Chat ID: {chat_id} | Testo: '{text}'")
+
+                if text:
+                    handle_command(base_url, chat_id, text, storage, default_kw, config)
 
         except asyncio.CancelledError:
             break

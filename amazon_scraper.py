@@ -14,7 +14,7 @@ USER_AGENTS = [
 ]
 
 LINK_REGEX = re.compile(
-    r'((?:https?://)?(?:amzn\.to|amzlink\.to|t\.co|bit\.ly|(?:www\.)?amazon\.[a-z.]+)/[^\s\)\>]+)',
+    r'((?:https?://)?(?:amzn\.to|amzlink\.to|t\.co|bit\.ly|tinyurl\.com|shorturl\.at|(?:www\.)?amazon\.[a-z.]+)/[^\s\)\>]+)',
     re.IGNORECASE
 )
 
@@ -33,6 +33,43 @@ def extract_links_from_text(text: str) -> List[str]:
         if link not in cleaned:
             cleaned.append(link)
     return cleaned
+
+def extract_links_from_telethon_message(msg) -> List[str]:
+    """
+    Estrae tutti i link Amazon/shortlink da un messaggio Telethon:
+    1. Testo o caption grezza
+    2. Entità formattate (hyperlink Markdown/HTML tipo [compra](url))
+    3. Pulsanti inline interattivi (reply_markup)
+    """
+    links: List[str] = []
+
+    # 1. Testo del messaggio o didascalia media
+    raw_text = getattr(msg, "message", "") or ""
+    if raw_text:
+        links.extend(extract_links_from_text(raw_text))
+
+    # 2. Entità formattate (es. link nascosti nelle parole)
+    entities = getattr(msg, "entities", None) or []
+    for ent in entities:
+        url = getattr(ent, "url", None)
+        if url:
+            links.extend(extract_links_from_text(url))
+
+    # 3. Pulsanti interattivi sotto il post (inline buttons)
+    reply_markup = getattr(msg, "reply_markup", None)
+    if reply_markup and hasattr(reply_markup, "rows"):
+        for row in reply_markup.rows:
+            for btn in getattr(row, "buttons", []):
+                btn_url = getattr(btn, "url", None)
+                if btn_url:
+                    links.extend(extract_links_from_text(btn_url))
+
+    # Deduplica mantenendo l'ordine
+    unique_links: List[str] = []
+    for l in links:
+        if l not in unique_links:
+            unique_links.append(l)
+    return unique_links
 
 def parse_price_str(raw: str) -> Optional[float]:
     """Converte una stringa di prezzo italiana/internazionale in float."""
