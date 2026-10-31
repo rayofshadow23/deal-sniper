@@ -86,13 +86,6 @@ async def process_message(event_or_msg, chat_title: str, storage: DealStorage, n
         title = prod.get("title", "Prodotto Amazon")
         badge = prod.get("deal_badge", "")
 
-        # Verifica che il prodotto Amazon corrisponda al messaggio originale
-        msg_words = set(w.lower() for w in msg_text.split() if len(w) > 3)
-        title_words = set(w.lower() for w in title.split() if len(w) > 3)
-        if msg_words and title_words and not (msg_words & title_words):
-            print(f"[{chat_title}] ASIN {asin} titolo Amazon non corrisponde al messaggio, saltato.")
-            continue
-
         # Verifica se soddisfa i criteri di alert
         should_notify = False
         reason = ""
@@ -171,7 +164,7 @@ async def process_message(event_or_msg, chat_title: str, storage: DealStorage, n
             is_new_low=is_new_low,
             previous_low=prev_low,
             keepa_graph_url=graph_url,
-            original_msg_snippet=snippet,
+            original_msg_snippet=""
             chat_ids=recipients,
             channel_username=chat_username,
             post_url=post_url,
