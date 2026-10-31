@@ -105,6 +105,7 @@ class TelegramBotNotifier:
             sent = False
 
             # 1. Opzione Preferita: immagine unica (prodotto + grafico Keepa uniti con Pillow) + bottoni inline
+            print(f"[NOTIFIER DEBUG] product_image_bytes={bool(product_image_bytes)} keepa_bytes={bool(keepa_bytes)} PIL={PIL_AVAILABLE}")
             merged_bytes = None
             if PIL_AVAILABLE and product_image_bytes and keepa_bytes:
                 try:
