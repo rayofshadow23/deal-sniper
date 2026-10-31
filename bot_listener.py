@@ -2,6 +2,8 @@ import asyncio
 import requests
 from typing import Dict, Any, List, Optional
 from storage import DealStorage
+from amazon_scraper import extract_links_from_text, resolve_amazon_link, fetch_amazon_product
+import io
 
 def register_bot_commands(base_url: str):
     """
@@ -103,6 +105,46 @@ async def run_bot_listener(bot_token: str, storage: DealStorage, config: dict):
 def handle_command(base_url: str, chat_id: int, text: str, storage: DealStorage, default_kw: list, config: dict):
     """Elabora i messaggi ricevuti dal bot Telegram."""
     lower = text.lower().strip()
+
+    # Rileva link Amazon incollati dall'utente e risponde con prezzo + grafico Keepa
+    links = extract_links_from_text(text)
+    amazon_links = [l for l in links if 'amazon' in l.lower() or 'amzn' in l.lower()]
+    if amazon_links:
+        for link in amazon_links:
+            final_url, asin = resolve_amazon_link(link)
+            if not asin:
+                send_reply(base_url, chat_id, "❌ Impossibile estrarre l'ASIN dal link.", reply_markup=DEFAULT_KEYBOARD)
+                continue
+            prod = fetch_amazon_product(asin)
+            if not prod.get('success'):
+                send_reply(base_url, chat_id, f"❌ Prodotto non disponibile: {prod.get('error')}", reply_markup=DEFAULT_KEYBOARD)
+                continue
+            title = prod.get('title','Prodotto Amazon')
+            price = prod['price']
+            discount = prod.get('discount_pct',0.0)
+            ref_price = prod.get('reference_price',0.0)
+            ref_label = prod.get('reference_label','')
+            graph_url = prod.get('keepa_graph_url','')
+            # scarica grafico keepa
+            keepa_bytes = None
+            try:
+                r = __import__('requests').get(graph_url, timeout=8)
+                if r.status_code==200 and r.content:
+                    keepa_bytes = r.content
+            except Exception:
+                pass
+            msg = f"📦 <b>{title[:120]}</b>\n💰 Prezzo: {price:.2f} €"
+            if discount>0: msg += f" (-{int(discount)}%)"
+            if ref_price>price>0: msg += f"\n📊 {ref_label or 'Rif.'}: {ref_price:.2f} €"
+            import requests as rq
+            if keepa_bytes:
+                try:
+                    rq.post(f"{base_url}/sendPhoto", data={"chat_id":chat_id,"caption":msg,"parse_mode":"HTML"}, files={"photo":("keepa.png",keepa_bytes,"image/png")}, timeout=12)
+                    continue
+                except Exception as e:
+                    print(f"[BOT LISTENER] sendPhoto fail: {e}")
+            send_reply(base_url, chat_id, msg, reply_markup=DEFAULT_KEYBOARD)
+        return
 
     # 1. Menu Principale, Start e Help
     if lower in ["/start", "/help", "❓ guida & comandi", "/menu", "📱 menu"]:
