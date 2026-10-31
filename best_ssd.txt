@@ -1,0 +1,51 @@
+tracked_products:
+- asin: B0B9C3ZVHR
+  name: Samsung 990 PRO 1TB (PCIe 4.0 con DRAM)
+  target_price: 195.0
+  capacity: 1TB
+  form_factor: '2280'
+- asin: B0B7CKVCCV
+  name: WD_BLACK SN850X 1TB (PCIe 4.0 con DRAM)
+  target_price: 189.0
+  capacity: 1TB
+  form_factor: '2280'
+- asin: B09K7F5VJQ
+  name: Kingston KC3000 1TB (PCIe 4.0 con DRAM)
+  target_price: 189.0
+  capacity: 1TB
+  form_factor: '2280'
+- asin: B0CK39YR9V
+  name: Crucial T500 1TB (PCIe 4.0 con DRAM)
+  target_price: 185.0
+  capacity: 1TB
+  form_factor: '2280'
+- asin: B0C4H5KXL6
+  name: Lexar NM790 1TB (PCIe 4.0 HMB)
+  target_price: 139.0
+  capacity: 1TB
+  form_factor: '2280'
+- asin: B0C8XMH264
+  name: WD Blue SN580 1TB (PCIe 4.0 Economico)
+  target_price: 135.0
+  capacity: 1TB
+  form_factor: '2280'
+- asin: B0DBR3DZWG
+  name: Kingston NV3 1TB (PCIe 4.0 Budget)
+  target_price: 105.0
+  capacity: 1TB
+  form_factor: '2280'
+- asin: B0DC8VPSHV
+  name: Crucial P310 1TB (PCIe 4.0 Entry-Level)
+  target_price: 105.0
+  capacity: 1TB
+  form_factor: '2280'
+- asin: B0C3ZJ8T6F
+  name: Acer Predator GM7 1TB (PCIe 4.0 HMB)
+  target_price: 129.0
+  capacity: 1TB
+  form_factor: '2280'
+- asin: B0C4KRMKFW
+  name: TeamGroup MP44 1TB (PCIe 4.0 HMB)
+  target_price: 119.0
+  capacity: 1TB
+  form_factor: '2280'
