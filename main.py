@@ -30,6 +30,15 @@ def contains_deal_keywords(text: str) -> bool:
     lower = text.lower()
     return any(kw in lower for kw in DEAL_KEYWORDS)
 
+_alert_lock = None
+
+def _get_lock():
+    global _alert_lock
+    import asyncio
+    if _alert_lock is None:
+        _alert_lock = asyncio.Lock()
+    return _alert_lock
+
 async def process_message(event_or_msg, chat_title: str, storage: DealStorage, notifier: TelegramBotNotifier, config: dict, chat_username: str = ""):
     msg_text = getattr(event_or_msg, "message", "") or ""
     chat_id = event_or_msg.chat_id
@@ -95,9 +104,15 @@ async def process_message(event_or_msg, chat_title: str, storage: DealStorage, n
             print(f"[{chat_title}] ASIN {asin} prezzo {price}€ (-{discount}%), scartato (sotto soglia).")
             continue
 
-        # Verifica cooldown per non spammare
-        if not storage.should_alert_asin(asin, price, cooldown_hours=config.get("filters", {}).get("cooldown_hours", 6.0)):
-            print(f"[{chat_title}] ASIN {asin} già notificato di recente, saltato.")
+        # Verifica cooldown per non spammare (lock per evitare duplicati tra canali)
+        async with _get_lock():
+            if not storage.should_alert_asin(asin, price, cooldown_hours=config.get("filters", {}).get("cooldown_hours", 6.0)):
+                print(f"[{chat_title}] ASIN {asin} già notificato di recente, saltato.")
+                skip = True
+            else:
+                storage.record_alert(asin, title, price, discount, chat_title)
+                skip = False
+        if skip:
             continue
 
         # Verifica quali utenti vogliono questa notifica in base ai loro filtri personali
@@ -156,8 +171,6 @@ async def process_message(event_or_msg, chat_title: str, storage: DealStorage, n
             product_image_bytes=prod_image_bytes
         )
 
-        # Registra alert nel database
-        storage.record_alert(asin, title, price, discount, chat_title)
 
 async def background_catchup_loop(client, entities, storage, notifier, config):
     """Loop di polling di recupero ogni 90 secondi per garantire zero messaggi persi."""
