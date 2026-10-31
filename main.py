@@ -164,7 +164,7 @@ async def process_message(event_or_msg, chat_title: str, storage: DealStorage, n
             is_new_low=is_new_low,
             previous_low=prev_low,
             keepa_graph_url=graph_url,
-            original_msg_snippet=""
+            original_msg_snippet="",
             chat_ids=recipients,
             channel_username=chat_username,
             post_url=post_url,
