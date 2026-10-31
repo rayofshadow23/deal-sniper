@@ -113,10 +113,12 @@ def handle_command(base_url: str, chat_id: int, text: str, storage: DealStorage,
     if amazon_links:
         for link in amazon_links:
             final_url, asin = resolve_amazon_link(link)
+            print(f"[BOT LISTENER DEBUG] asin={asin}")
             if not asin:
                 send_reply(base_url, chat_id, "❌ Impossibile estrarre l'ASIN dal link.", reply_markup=DEFAULT_KEYBOARD)
                 continue
             prod = fetch_amazon_product(asin)
+            print(f"[BOT LISTENER DEBUG] prod success={prod.get('success')} price={prod.get('price')}")
             if not prod.get('success'):
                 send_reply(base_url, chat_id, f"❌ Prodotto non disponibile: {prod.get('error')}", reply_markup=DEFAULT_KEYBOARD)
                 continue
@@ -126,25 +128,36 @@ def handle_command(base_url: str, chat_id: int, text: str, storage: DealStorage,
             ref_price = prod.get('reference_price',0.0)
             ref_label = prod.get('reference_label','')
             graph_url = prod.get('keepa_graph_url','')
+            print(f"[BOT LISTENER DEBUG] graph_url={graph_url}")
             # scarica grafico keepa
             keepa_bytes = None
             try:
-                r = __import__('requests').get(graph_url, timeout=8)
+                r = __import__('requests').get(graph_url, headers={"User-Agent":"Mozilla/5.0"}, timeout=8)
                 if r.status_code==200 and r.content:
                     keepa_bytes = r.content
-            except Exception:
-                pass
+                    print(f"[BOT LISTENER DEBUG] keepa status={r.status_code} bytes={len(keepa_bytes)}")
+                else:
+                    print(f"[BOT LISTENER DEBUG] keepa status={r.status_code} no content")
+            except Exception as e:
+                print(f"[BOT LISTENER DEBUG] keepa download err={e}")
+            affiliate_tag = config.get("amazon", {}).get("affiliate_tag", "")
+            tag_param = f"?tag={affiliate_tag}" if affiliate_tag else ""
+            final_amazon_url = f"https://www.amazon.it/dp/{asin}{tag_param}"
+            keepa_url = f"https://keepa.com/#!product/8-{asin}"
+            buttons = [[{"text": "🛒 Apri su Amazon", "url": final_amazon_url}, {"text": "📈 Grafico Keepa", "url": keepa_url}]]
+            reply_markup = {"inline_keyboard": buttons}
             msg = f"📦 <b>{title[:120]}</b>\n💰 Prezzo: {price:.2f} €"
             if discount>0: msg += f" (-{int(discount)}%)"
             if ref_price>price>0: msg += f"\n📊 {ref_label or 'Rif.'}: {ref_price:.2f} €"
-            import requests as rq
+            import requests as rq, json as _json
             if keepa_bytes:
                 try:
-                    rq.post(f"{base_url}/sendPhoto", data={"chat_id":chat_id,"caption":msg,"parse_mode":"HTML"}, files={"photo":("keepa.png",keepa_bytes,"image/png")}, timeout=12)
+                    resp = rq.post(f"{base_url}/sendPhoto", data={"chat_id":chat_id,"caption":msg,"parse_mode":"HTML","reply_markup":_json.dumps(reply_markup)}, files={"photo":("keepa.png",keepa_bytes,"image/png")}, timeout=12)
+                    print(f"[BOT LISTENER DEBUG] sendPhoto status={resp.status_code} body={resp.text[:100]}")
                     continue
                 except Exception as e:
                     print(f"[BOT LISTENER] sendPhoto fail: {e}")
-            send_reply(base_url, chat_id, msg, reply_markup=DEFAULT_KEYBOARD)
+            send_reply(base_url, chat_id, msg, reply_markup=reply_markup)
         return
 
     # 1. Menu Principale, Start e Help
@@ -211,8 +224,6 @@ def handle_command(base_url: str, chat_id: int, text: str, storage: DealStorage,
     # 5. Impostazione Filtri con argomenti
     if lower.startswith("/filter"):
         args = text[7:].strip()
-    elif not text.startswith("/"):
-        args = text.strip()
     else:
         return
 
