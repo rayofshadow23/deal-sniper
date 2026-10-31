@@ -61,7 +61,8 @@ async def process_message(event_or_msg, chat_title: str, storage: DealStorage, n
 
     # Controlla se il messaggio contiene parole chiave di errore o offerta
     is_error_flagged = contains_deal_keywords(msg_text)
-    always_check = config.get("filters", {}).get("check_all_amazon_links", True)
+    # Default False: solo messaggi con parole chiave di errore/offerta fanno richieste ad Amazon.
+    always_check = config.get("filters", {}).get("check_all_amazon_links", False)
 
     if not is_error_flagged and not always_check:
         return
@@ -77,6 +78,9 @@ async def process_message(event_or_msg, chat_title: str, storage: DealStorage, n
 
         # Verifica su Amazon
         prod = fetch_amazon_product(asin)
+        if prod.get("blocked"):
+            print(f"[{chat_title}] Amazon in pausa di sicurezza, salto i link rimanenti.")
+            return
         if not prod.get("success") or not prod.get("is_available"):
             print(f"[{chat_title}] ASIN {asin} non disponibile o prezzo non trovato: {prod.get('error')}")
             continue

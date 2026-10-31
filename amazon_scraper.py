@@ -1,61 +1,96 @@
+"""
+Amazon.it scraper for deal-sniper.
+
+Safety:
+- one stable Chrome identity (curl_cffi impersonation when installed)
+- global rate limit with jitter between Amazon product requests
+- short per-ASIN cache, so channels posting the same deal do not multiply requests
+- circuit breaker: after a CAPTCHA / 503 / 429 every Amazon request stops for a long pause
+- short links are followed ONLY for official Amazon hosts (no tinyurl, bit.ly, t.co...)
+- price read from the main price block of the product page
+"""
 import re
 import random
+import threading
 import time
 import requests
-from typing import Dict, Any, Optional, List, Tuple
-from urllib.parse import urlparse, parse_qs
+from typing import Dict, Any, List, Optional, Tuple
+from urllib.parse import urlparse, parse_qs, urljoin
 
-USER_AGENTS = [
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0"
-]
+try:
+    from curl_cffi import requests as cffi_requests
+    HAS_CFFI = True
+except ImportError:
+    cffi_requests = None
+    HAS_CFFI = False
 
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+MIN_INTERVAL_S = 6.0
+JITTER_S = 4.0
+CACHE_TTL_S = 600
+BLOCK_BASE_S = 3600
+BLOCK_MAX_S = 6 * 3600
+MAX_REDIRECT_HOPS = 4
+
+FALLBACK_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
+
+# Only these short-link hosts are followed. Everything else is ignored.
+SHORT_HOSTS = {"amzn.to", "amzn.eu", "amzlink.to", "a.co"}
+
+# Hosts we are willing to extract links from (Amazon itself and the short links above)
 LINK_REGEX = re.compile(
-    r'((?:https?://)?(?:amzn.to|amzn.eu|amzlink\.to|t\.co|bit\.ly|tinyurl\.com|shorturl\.at|(?:www\.)?amazon\.[a-z.]+)/[^\s\)\>]+)',
+    r'((?:https?://)?(?:amzn\.to|amzn\.eu|amzlink\.to|a\.co|(?:www\.)?amazon\.[a-z.]+)/[^\s\)\>]+)',
     re.IGNORECASE
 )
 
 ASIN_REGEX = re.compile(r'(?:/dp/|/gp/product/|/d/|/ASIN/|/product/)([A-Z0-9]{10})', re.IGNORECASE)
+AMAZON_HOST_REGEX = re.compile(r'(^|\.)amazon\.[a-z.]+$', re.IGNORECASE)
 
+PRICE_BLOCK_IDS = (
+    "corePriceDisplay_desktop_feature_div",
+    "corePrice_feature_div",
+    "corePrice_desktop",
+    "apex_desktop",
+    "buybox",
+)
+PRICE_BLOCK_LEN = 6000
+
+
+# ---------------------------------------------------------------------------
+# Text helpers
+# ---------------------------------------------------------------------------
 def extract_links_from_text(text: str) -> List[str]:
-    """Trova tutti i link Amazon o shortlink nel testo del messaggio (anche senza https://)."""
+    """Trova link Amazon o shortlink ufficiali nel testo (anche senza https://)."""
     if not text:
         return []
-    matches = LINK_REGEX.findall(text)
-    cleaned = []
-    for link in matches:
+    cleaned: List[str] = []
+    for link in LINK_REGEX.findall(text):
         link = link.rstrip(".,;!*`'\"")
-        if not link.startswith("http://") and not link.startswith("https://"):
+        if not link.startswith(("http://", "https://")):
             link = f"https://{link}"
         if link not in cleaned:
             cleaned.append(link)
     return cleaned
 
+
 def extract_links_from_telethon_message(msg) -> List[str]:
-    """
-    Estrae tutti i link Amazon/shortlink da un messaggio Telethon:
-    1. Testo o caption grezza
-    2. Entità formattate (hyperlink Markdown/HTML tipo [compra](url))
-    3. Pulsanti inline interattivi (reply_markup)
-    """
+    """Estrae i link da testo, entità formattate e pulsanti inline di un messaggio Telethon."""
     links: List[str] = []
 
-    # 1. Testo del messaggio o didascalia media
     raw_text = getattr(msg, "message", "") or ""
     if raw_text:
         links.extend(extract_links_from_text(raw_text))
 
-    # 2. Entità formattate (es. link nascosti nelle parole)
-    entities = getattr(msg, "entities", None) or []
-    for ent in entities:
+    for ent in (getattr(msg, "entities", None) or []):
         url = getattr(ent, "url", None)
         if url:
             links.extend(extract_links_from_text(url))
 
-    # 3. Pulsanti interattivi sotto il post (inline buttons)
     reply_markup = getattr(msg, "reply_markup", None)
     if reply_markup and hasattr(reply_markup, "rows"):
         for row in reply_markup.rows:
@@ -64,12 +99,12 @@ def extract_links_from_telethon_message(msg) -> List[str]:
                 if btn_url:
                     links.extend(extract_links_from_text(btn_url))
 
-    # Deduplica mantenendo l'ordine
-    unique_links: List[str] = []
+    unique: List[str] = []
     for l in links:
-        if l not in unique_links:
-            unique_links.append(l)
-    return unique_links
+        if l not in unique:
+            unique.append(l)
+    return unique
+
 
 def parse_price_str(raw: str) -> Optional[float]:
     """Converte una stringa di prezzo italiana/internazionale in float."""
@@ -80,7 +115,8 @@ def parse_price_str(raw: str) -> Optional[float]:
     if not m:
         return None
     num_str = m.group(1).strip(".,")
-    
+    if not num_str:
+        return None
     if "." in num_str and "," in num_str:
         if num_str.find(".") < num_str.find(","):
             num_str = num_str.replace(".", "").replace(",", ".")
@@ -92,18 +128,24 @@ def parse_price_str(raw: str) -> Optional[float]:
         parts = num_str.split(".")
         if len(parts) == 2 and len(parts[1]) == 3 and int(parts[0]) > 0:
             num_str = num_str.replace(".", "")
-            
     try:
         val = float(num_str)
         return val if val > 0 else None
     except ValueError:
         return None
 
-def get_default_session() -> requests.Session:
-    """Crea una sessione requests con header realistici."""
+
+# ---------------------------------------------------------------------------
+# Session
+# ---------------------------------------------------------------------------
+def get_default_session():
+    if HAS_CFFI:
+        s = cffi_requests.Session(impersonate="chrome")
+        s.headers.update({"Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7"})
+        return s
     s = requests.Session()
     s.headers.update({
-        "User-Agent": random.choice(USER_AGENTS),
+        "User-Agent": FALLBACK_UA,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
         "Sec-Ch-Ua": '"Chromium";v="131", "Google Chrome";v="131", "Not?A_Brand";v="99"',
@@ -117,192 +159,302 @@ def get_default_session() -> requests.Session:
     })
     return s
 
-_shared_session: Optional[requests.Session] = None
 
-def get_shared_session() -> requests.Session:
+_shared_session = None
+_session_lock = threading.Lock()
+
+
+def get_shared_session():
     global _shared_session
-    if _shared_session is None:
-        _shared_session = get_default_session()
-    return _shared_session
+    with _session_lock:
+        if _shared_session is None:
+            _shared_session = get_default_session()
+        return _shared_session
 
-def resolve_amazon_link(url: str, session: Optional[requests.Session] = None) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Risolve redirect (es. amzn.to o amzlink.to) e restituisce (final_url, asin).
-    """
-    s = session or get_shared_session()
-    headers = {"User-Agent": random.choice(USER_AGENTS)}
-    
-    # Se ha già l'ASIN nel link, estrailo direttamente
+
+def _reset_shared_session():
+    global _shared_session
+    with _session_lock:
+        _shared_session = None
+
+
+# ---------------------------------------------------------------------------
+# Rate limit, circuit breaker, cache
+# ---------------------------------------------------------------------------
+_rate_lock = threading.Lock()
+_next_allowed = 0.0
+
+
+def _throttle():
+    global _next_allowed
+    with _rate_lock:
+        wait = _next_allowed - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _next_allowed = time.monotonic() + MIN_INTERVAL_S + random.uniform(0, JITTER_S)
+
+
+_block_lock = threading.Lock()
+_blocked_until = 0.0
+_block_strikes = 0
+
+
+def blocked_seconds_left() -> int:
+    with _block_lock:
+        return max(0, int(_blocked_until - time.monotonic()))
+
+
+def _trip_breaker() -> int:
+    global _blocked_until, _block_strikes
+    with _block_lock:
+        _block_strikes += 1
+        duration = min(BLOCK_BASE_S * (2 ** (_block_strikes - 1)), BLOCK_MAX_S)
+        _blocked_until = time.monotonic() + duration
+    _reset_shared_session()
+    return int(duration)
+
+
+def _record_success():
+    global _block_strikes
+    with _block_lock:
+        _block_strikes = 0
+
+
+_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_cache_lock = threading.Lock()
+
+
+def _cache_get(asin: str) -> Optional[Dict[str, Any]]:
+    with _cache_lock:
+        item = _cache.get(asin)
+        if item and (time.monotonic() - item[0]) < CACHE_TTL_S:
+            return dict(item[1])
+        if item:
+            del _cache[asin]
+    return None
+
+
+def _cache_put(asin: str, result: Dict[str, Any]):
+    with _cache_lock:
+        _cache[asin] = (time.monotonic(), dict(result))
+        if len(_cache) > 500:
+            for key, _ in sorted(_cache.items(), key=lambda kv: kv[1][0])[:100]:
+                _cache.pop(key, None)
+
+
+# ---------------------------------------------------------------------------
+# Link resolution (never loads the product page)
+# ---------------------------------------------------------------------------
+def _is_amazon_host(host: str) -> bool:
+    return bool(host and AMAZON_HOST_REGEX.search(host))
+
+
+def _asin_from_url(url: str) -> Optional[str]:
     m = ASIN_REGEX.search(url)
     if m:
-        asin = m.group(1).upper()
-        return f"https://www.amazon.it/dp/{asin}", asin
+        return m.group(1).upper()
+    qs = parse_qs(urlparse(url).query)
+    if qs.get("asin"):
+        return qs["asin"][0].upper()
+    return None
 
-    try:
-        # Fai una richiesta con redirect abilitati
-        resp = s.get(url, headers=headers, allow_redirects=True, timeout=8)
-        final_url = resp.url
-        m_final = ASIN_REGEX.search(final_url)
-        if m_final:
-            asin = m_final.group(1).upper()
+
+def resolve_amazon_link(url: str, session=None) -> Tuple[Optional[str], Optional[str]]:
+    """Return (final_url, asin). Only Amazon hosts and official short links are followed."""
+    host = (urlparse(url).hostname or "").lower()
+
+    if _is_amazon_host(host):
+        asin = _asin_from_url(url)
+        if asin:
             return f"https://www.amazon.it/dp/{asin}", asin
-            
-        # Controlla se l'ASIN è nei parametri query (es. ?asin=...)
-        parsed = urlparse(final_url)
-        qs = parse_qs(parsed.query)
-        if "asin" in qs and qs["asin"]:
-            asin = qs["asin"][0].upper()
-            return f"https://www.amazon.it/dp/{asin}", asin
-            
-        return final_url, None
-    except Exception as e:
+        return url, None
+
+    if host not in SHORT_HOSTS:
         return None, None
 
-def fetch_amazon_product(asin: str, session: Optional[requests.Session] = None, max_retries: int = 2) -> Dict[str, Any]:
-    """
-    Scraper leggero della pagina prodotto di Amazon.it per l'ASIN specificato.
-    """
-    url = f"https://www.amazon.it/dp/{asin}"
     s = session or get_shared_session()
-    
+    current = url
+    try:
+        for _ in range(MAX_REDIRECT_HOPS):
+            resp = s.get(current, allow_redirects=False, timeout=8)
+            location = resp.headers.get("Location")
+            if resp.status_code not in (301, 302, 303, 307, 308) or not location:
+                return None, None
+            nxt = urljoin(current, location)
+            nhost = (urlparse(nxt).hostname or "").lower()
+            if _is_amazon_host(nhost):
+                asin = _asin_from_url(nxt)
+                if asin:
+                    return f"https://www.amazon.it/dp/{asin}", asin
+                return nxt, None
+            if nhost not in SHORT_HOSTS:
+                return None, None
+            current = nxt
+    except Exception:
+        return None, None
+    return None, None
+
+
+# ---------------------------------------------------------------------------
+# Product page
+# ---------------------------------------------------------------------------
+def _fail(asin: str, error: str, blocked: bool = False) -> Dict[str, Any]:
+    return {
+        "success": False,
+        "asin": asin,
+        "error": error,
+        "price": 0.0,
+        "discount_pct": 0.0,
+        "deal_badge": "",
+        "is_available": False,
+        "blocked": blocked,
+    }
+
+
+def _price_region(html: str) -> str:
+    for block_id in PRICE_BLOCK_IDS:
+        m = re.search(r'id=["\']' + re.escape(block_id) + r'["\']', html)
+        if m:
+            return html[m.start(): m.start() + PRICE_BLOCK_LEN]
+    return html
+
+
+def _find_price(region: str) -> float:
+    m = re.search(r'class=["\'][^"\']*a-offscreen[^"\']*["\']>\s*([0-9.,]+)(?:\s|&nbsp;)*(?:€|&euro;)?\s*<', region)
+    if m:
+        p = parse_price_str(m.group(1))
+        if p:
+            return p
+    m_whole = re.search(r'class=["\']a-price-whole["\']>([0-9.,]+)<', region)
+    m_frac = re.search(r'class=["\']a-price-fraction["\']>([0-9]+)<', region)
+    if m_whole:
+        w_str = m_whole.group(1).replace(".", "").replace(",", "").strip()
+        f_str = m_frac.group(1).strip() if m_frac else "00"
+        try:
+            return float(f"{w_str}.{f_str}")
+        except ValueError:
+            pass
+    return 0.0
+
+
+def _parse_product_html(asin: str, html: str, url: str) -> Dict[str, Any]:
+    title = ""
+    m_title = re.search(r'id=["\']productTitle["\'][^>]*>\s*([^<]+)\s*<', html)
+    if m_title:
+        title = m_title.group(1).strip()
+
+    deal_badge = ""
+    m_badge = re.search(
+        r'(Offerta Black Friday|Black Friday|Offerta a tempo|Offerta del giorno|Offerta lampo|Offerta di primavera)',
+        html, re.IGNORECASE)
+    if m_badge:
+        deal_badge = m_badge.group(0).strip()
+
+    region = _price_region(html)
+
+    discount_pct = 0.0
+    m_disc = re.search(r'class=["\'][^"\']*savingsPercentage[^"\']*["\']>([^<]+)<', region)
+    if m_disc:
+        try:
+            discount_pct = float(m_disc.group(1).replace("-", "").replace("%", "").strip())
+        except ValueError:
+            pass
+
+    price = _find_price(region)
+
+    is_available = True
+    if price == 0.0 and ("Attualmente non disponibile" in html or "Non disponibile" in html):
+        is_available = False
+
+    reference_price = 0.0
+    reference_label = ""
+    m_basis = re.search(
+        r'(Prezzo (?:consigliato|più basso recente|mediano))[^0-9€]*([0-9.,]+)(?:\s|&nbsp;)*(?:€|&euro;)',
+        region, re.I)
+    if m_basis:
+        reference_label = m_basis.group(1).strip()
+        ref_p = parse_price_str(m_basis.group(2))
+        if ref_p:
+            reference_price = ref_p
+    if reference_price == 0.0:
+        m_span = re.search(
+            r'class=["\'][^"\']*basisPrice[^"\']*["\'][^>]*>.*?class=["\']a-offscreen["\']>([0-9.,]+)(?:\s|&nbsp;)*(?:€|&euro;)',
+            region, re.S | re.I)
+        if m_span:
+            ref_p = parse_price_str(m_span.group(1))
+            if ref_p:
+                reference_price = ref_p
+                reference_label = "Prezzo consigliato"
+
+    if reference_price > price > 0.0 and discount_pct == 0.0:
+        discount_pct = round(((reference_price - price) / reference_price) * 100, 0)
+
+    return {
+        "success": price > 0.0,
+        "asin": asin,
+        "title": title or "Prodotto Amazon",
+        "price": price,
+        "reference_price": reference_price,
+        "reference_label": reference_label,
+        "discount_pct": discount_pct,
+        "deal_badge": deal_badge,
+        "keepa_graph_url": f"https://graph.keepa.com/pricehistory.png?asin={asin}&domain=it",
+        "is_available": is_available,
+        "url": url,
+        "error": None if price > 0.0 else "Prezzo non trovato",
+        "blocked": False,
+    }
+
+
+def fetch_amazon_product(asin: str, session=None, max_retries: int = 1) -> Dict[str, Any]:
+    """Fetch one Amazon.it product. Check result['blocked'] before anything else."""
+    cached = _cache_get(asin)
+    if cached is not None:
+        return cached
+
+    left = blocked_seconds_left()
+    if left > 0:
+        return _fail(asin, f"Amazon in pausa ancora {left // 60 + 1} min", blocked=True)
+
+    url = f"https://www.amazon.it/dp/{asin}"
+
     for attempt in range(max_retries + 1):
-        headers = {
-            "User-Agent": random.choice(USER_AGENTS),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
-        }
+        s = session or get_shared_session()
+        _throttle()
+
+        left = blocked_seconds_left()
+        if left > 0:
+            return _fail(asin, f"Amazon in pausa ancora {left // 60 + 1} min", blocked=True)
 
         try:
-            resp = s.get(url, headers=headers, timeout=10)
+            resp = s.get(url, timeout=12)
             html = resp.text
 
-            # Rilevamento CAPTCHA
-            is_captcha = "api-services-support@amazon.com" in html or "Type the characters you see in this image" in html or resp.status_code == 503
-            if is_captcha:
-                if attempt < max_retries:
-                    time.sleep(2 * (attempt + 1))
-                    s = get_default_session()
-                    continue
-                return {
-                    "success": False,
-                    "asin": asin,
-                    "error": "Amazon CAPTCHA",
-                    "price": 0.0,
-                    "is_available": False
-                }
+            is_block = (
+                resp.status_code in (429, 503)
+                or "api-services-support@amazon.com" in html
+                or "Type the characters you see in this image" in html
+                or "/errors/validateCaptcha" in html
+            )
+            if is_block:
+                pause = _trip_breaker()
+                print(f"[AMAZON] Blocco/CAPTCHA rilevato. Pausa di {pause // 60} minuti.")
+                return _fail(asin, "Amazon CAPTCHA", blocked=True)
 
             if resp.status_code != 200:
-                return {
-                    "success": False,
-                    "asin": asin,
-                    "error": f"HTTP status {resp.status_code}",
-                    "price": 0.0,
-                    "is_available": False
-                }
+                result = _fail(asin, f"HTTP status {resp.status_code}")
+                _cache_put(asin, result)
+                return result
 
-            # 1. Titolo
-            title = ""
-            m_title = re.search(r'id=["\']productTitle["\'][^>]*>\s*([^<]+)\s*<', html)
-            if m_title:
-                title = m_title.group(1).strip()
-
-            # 2. Badge Offerta
-            deal_badge = ""
-            m_badge = re.search(r'(Offerta Black Friday|Black Friday|Offerta a tempo|Offerta del giorno|Offerta lampo|Offerta di primavera)', html, re.IGNORECASE)
-            if m_badge:
-                deal_badge = m_badge.group(0).strip()
-
-            # 3. Sconto Percentuale
-            discount_pct = 0.0
-            m_disc = re.search(r'class=["\'][^"\']*savingsPercentage[^"\']*["\']>([^<]+)<', html)
-            if m_disc:
-                disc_str = m_disc.group(1).replace("-", "").replace("%", "").strip()
-                try:
-                    discount_pct = float(disc_str)
-                except ValueError:
-                    pass
-
-            # 4. Prezzo BuyBox
-            price = 0.0
-            m_price_topay = re.search(r'class=["\'][^"\']*aok-offscreen[^"\']*["\']>\s*([0-9.,]+)\s*(?:€|&euro;)', html)
-            if m_price_topay:
-                p = parse_price_str(m_price_topay.group(1))
-                if p:
-                    price = p
-
-            if price == 0.0:
-                m_whole = re.search(r'class=["\']a-price-whole["\']>([0-9.,]+)<', html)
-                m_frac = re.search(r'class=["\']a-price-fraction["\']>([0-9]+)<', html)
-                if m_whole:
-                    w_str = m_whole.group(1).replace(".", "").replace(",", "").strip()
-                    f_str = m_frac.group(1).strip() if m_frac else "00"
-                    try:
-                        price = float(f"{w_str}.{f_str}")
-                    except ValueError:
-                        pass
-
-            if price == 0.0:
-                m_offscreen = re.search(r'class=["\']a-offscreen["\']>([0-9.,]+)\s*(?:€|&euro;)?<', html)
-                if m_offscreen:
-                    p = parse_price_str(m_offscreen.group(1))
-                    if p:
-                        price = p
-
-            is_available = True
-            if "Attualmente non disponibile" in html or "Non disponibile" in html:
-                if price == 0.0:
-                    is_available = False
-
-            # 5. Prezzo di Riferimento Storico (Consigliato / Ultimi 30 giorni / Mediano)
-            reference_price = 0.0
-            reference_label = ""
-            
-            m_basis = re.search(r'(Prezzo (?:consigliato|più basso recente|mediano))[^0-9€]*([0-9.,]+)\s*(?:€|&euro;)', html, re.I)
-            if m_basis:
-                reference_label = m_basis.group(1).strip()
-                ref_p = parse_price_str(m_basis.group(2))
-                if ref_p:
-                    reference_price = ref_p
-            
-            if reference_price == 0.0:
-                m_span_basis = re.search(r'class=[\"\'][^\"\']*basisPrice[^\"\']*[\"\'][^>]*>.*?class=[\"\']a-offscreen[\"\']>([0-9.,]+)\s*(?:€|&euro;)', html, re.S | re.I)
-                if m_span_basis:
-                    ref_p = parse_price_str(m_span_basis.group(1))
-                    if ref_p:
-                        reference_price = ref_p
-                        reference_label = "Prezzo consigliato"
-
-            # Se abbiamo il prezzo di riferimento, calcoliamo lo sconto reale garantito
-            if reference_price > price > 0.0:
-                real_disc = round(((reference_price - price) / reference_price) * 100, 0)
-                if discount_pct == 0.0:
-                    discount_pct = real_disc
-
-            keepa_graph_url = f"https://graph.keepa.com/pricehistory.png?asin={asin}&domain=it"
-
-            return {
-                "success": price > 0.0,
-                "asin": asin,
-                "title": title or "Prodotto Amazon",
-                "price": price,
-                "reference_price": reference_price,
-                "reference_label": reference_label,
-                "discount_pct": discount_pct,
-                "deal_badge": deal_badge,
-                "keepa_graph_url": keepa_graph_url,
-                "is_available": is_available,
-                "url": url,
-                "error": None if price > 0.0 else "Prezzo non trovato"
-            }
+            _record_success()
+            result = _parse_product_html(asin, html, url)
+            _cache_put(asin, result)
+            return result
 
         except Exception as e:
             if attempt < max_retries:
-                time.sleep(1)
+                time.sleep(random.uniform(3, 6))
                 continue
-            return {
-                "success": False,
-                "asin": asin,
-                "error": str(e),
-                "price": 0.0,
-                "is_available": False
-            }
+            return _fail(asin, str(e))
+
+    return _fail(asin, "Errore sconosciuto")

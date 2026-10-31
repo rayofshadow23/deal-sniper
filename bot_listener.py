@@ -4,6 +4,34 @@ from typing import Dict, Any, List, Optional
 from storage import DealStorage
 from amazon_scraper import extract_links_from_text, resolve_amazon_link, fetch_amazon_product
 import io
+import time
+import os
+from collections import deque
+
+# Allowlist: loaded from config.yaml -> telegram_bot.allowed_chat_ids (set in run_bot_listener)
+_ALLOWED_CHAT_IDS: set = set()
+# Amazon lookups per user: loaded from config.yaml -> limits.*
+_MAX_LOOKUPS_PER_HOUR = 20
+_lookup_times: dict = {}
+
+
+def _is_allowed(chat_id) -> bool:
+    try:
+        return int(chat_id) in _ALLOWED_CHAT_IDS
+    except (TypeError, ValueError):
+        return False
+
+
+def _lookup_allowed(chat_id) -> bool:
+    """Max N Amazon lookups per user per hour."""
+    now = time.time()
+    q = _lookup_times.setdefault(chat_id, deque())
+    while q and now - q[0] > 3600:
+        q.popleft()
+    if len(q) >= _MAX_LOOKUPS_PER_HOUR:
+        return False
+    q.append(now)
+    return True
 
 def register_bot_commands(base_url: str):
     """
@@ -40,6 +68,13 @@ async def run_bot_listener(bot_token: str, storage: DealStorage, config: dict):
     if not bot_token or ":" not in bot_token:
         print("[BOT LISTENER] Token bot non valido o non configurato, listener interattivo disabilitato.")
         return
+
+    global _ALLOWED_CHAT_IDS, _MAX_LOOKUPS_PER_HOUR
+    tg_cfg = config.get("telegram_bot", {}) or {}
+    _ALLOWED_CHAT_IDS = {int(x) for x in (tg_cfg.get("allowed_chat_ids") or [])}
+    _MAX_LOOKUPS_PER_HOUR = int((config.get("limits", {}) or {}).get("max_amazon_lookups_per_user_per_hour", 20))
+    if not _ALLOWED_CHAT_IDS:
+        print("[SECURITY] telegram_bot.allowed_chat_ids vuoto: il listener ignorerà tutti i messaggi.")
 
     base_url = f"https://api.telegram.org/bot{bot_token}"
     register_bot_commands(base_url)
@@ -79,20 +114,21 @@ async def run_bot_listener(bot_token: str, storage: DealStorage, config: dict):
                     c = mcm.get("chat", {})
                     print(f"📢 [CANALE/GRUPPO RILEVATO] Titolo: '{c.get('title')}' | ID: {c.get('id')}")
 
-                # Rileva post in canali (channel_post) o messaggi normali (message)
-                msg = update.get("message") or update.get("channel_post")
+                # Solo messaggi privati (message). I post dei canali NON sono comandi:
+                # prima venivano processati e potevano far partire richieste ad Amazon.
+                msg = update.get("message")
                 if not msg:
                     continue
 
                 chat = msg.get("chat", {})
                 chat_id = chat.get("id")
-                chat_type = chat.get("type", "")
-                chat_title = chat.get("title", "")
-                text = msg.get("text", "").strip()
+                if chat.get("type") != "private":
+                    continue
+                if not _is_allowed(chat_id):
+                    print(f"[Security] Messaggio ignorato da chat non autorizzata: {chat_id}")
+                    continue
 
-                if chat_type in ["channel", "supergroup", "group"]:
-                    print(f"📢 [MESSAGGIO IN CANALE/GRUPPO] Titolo: '{chat_title}' | Chat ID: {chat_id} | Testo: '{text}'")
-
+                text = (msg.get("text") or "").strip()
                 if text:
                     handle_command(base_url, chat_id, text, storage, default_kw, config)
 
@@ -108,17 +144,20 @@ def handle_command(base_url: str, chat_id: int, text: str, storage: DealStorage,
 
     # Rileva link Amazon incollati dall'utente e risponde con prezzo + grafico Keepa
     links = extract_links_from_text(text)
-    print(f"[BOT LISTENER DEBUG] text={text[:80]} links={links}")
     amazon_links = [l for l in links if 'amazon' in l.lower() or 'amzn' in l.lower()]
     if amazon_links:
-        for link in amazon_links:
+        if not _lookup_allowed(chat_id):
+            send_reply(base_url, chat_id, "⛔ Hai raggiunto il limite di ricerche Amazon per questa ora. Riprova più tardi.", reply_markup=DEFAULT_KEYBOARD)
+            return
+        for link in amazon_links[:3]:
             final_url, asin = resolve_amazon_link(link)
-            print(f"[BOT LISTENER DEBUG] asin={asin}")
             if not asin:
                 send_reply(base_url, chat_id, "❌ Impossibile estrarre l'ASIN dal link.", reply_markup=DEFAULT_KEYBOARD)
                 continue
             prod = fetch_amazon_product(asin)
-            print(f"[BOT LISTENER DEBUG] prod success={prod.get('success')} price={prod.get('price')}")
+            if prod.get('blocked'):
+                send_reply(base_url, chat_id, "⏸️ Amazon è in pausa di sicurezza. Riprova più tardi.", reply_markup=DEFAULT_KEYBOARD)
+                return
             if not prod.get('success'):
                 send_reply(base_url, chat_id, f"❌ Prodotto non disponibile: {prod.get('error')}", reply_markup=DEFAULT_KEYBOARD)
                 continue
@@ -128,18 +167,14 @@ def handle_command(base_url: str, chat_id: int, text: str, storage: DealStorage,
             ref_price = prod.get('reference_price',0.0)
             ref_label = prod.get('reference_label','')
             graph_url = prod.get('keepa_graph_url','')
-            print(f"[BOT LISTENER DEBUG] graph_url={graph_url}")
             # scarica grafico keepa
             keepa_bytes = None
             try:
                 r = __import__('requests').get(graph_url, headers={"User-Agent":"Mozilla/5.0"}, timeout=8)
                 if r.status_code==200 and r.content:
                     keepa_bytes = r.content
-                    print(f"[BOT LISTENER DEBUG] keepa status={r.status_code} bytes={len(keepa_bytes)}")
-                else:
-                    print(f"[BOT LISTENER DEBUG] keepa status={r.status_code} no content")
-            except Exception as e:
-                print(f"[BOT LISTENER DEBUG] keepa download err={e}")
+            except Exception:
+                pass
             affiliate_tag = config.get("amazon", {}).get("affiliate_tag", "")
             tag_param = f"?tag={affiliate_tag}" if affiliate_tag else ""
             final_amazon_url = f"https://www.amazon.it/dp/{asin}{tag_param}"
@@ -153,7 +188,6 @@ def handle_command(base_url: str, chat_id: int, text: str, storage: DealStorage,
             if keepa_bytes:
                 try:
                     resp = rq.post(f"{base_url}/sendPhoto", data={"chat_id":chat_id,"caption":msg,"parse_mode":"HTML","reply_markup":_json.dumps(reply_markup)}, files={"photo":("keepa.png",keepa_bytes,"image/png")}, timeout=12)
-                    print(f"[BOT LISTENER DEBUG] sendPhoto status={resp.status_code} body={resp.text[:100]}")
                     continue
                 except Exception as e:
                     print(f"[BOT LISTENER] sendPhoto fail: {e}")

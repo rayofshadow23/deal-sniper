@@ -87,7 +87,7 @@ telegram_scraper:
 telegram_bot:
   token: "123456789:ABCdefGhI..."           # Token del bot da @BotFather
   alert_chat_ids:
-    - 123456789                              # Il tuo ID numerico
+    - 0                                     # Il tuo ID numerico (sostituisci)
 
 filters:
   check_all_amazon_links: true              # Controlla tutti i link o solo "errore"

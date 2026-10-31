@@ -25,7 +25,17 @@ telegram_bot:
   # Lista di Chat ID Telegram che riceveranno le notifiche istantanee
   # (Puoi scoprire il tuo ID inviando un messaggio a @userinfobot)
   alert_chat_ids:
-    - 123456789
+    - 0  # sostituisci con il tuo chat ID
+
+  # Allowlist: SOLO questi chat ID possono usare i comandi del bot (solo chat private).
+  # Lista vuota = il bot ignora tutti.
+  allowed_chat_ids:
+    - 0  # sostituisci con i chat ID autorizzati
+
+# Limiti per proteggere il tuo IP dalle richieste verso Amazon
+limits:
+  # Ricerche Amazon massime per utente all'ora (link incollati nel bot)
+  max_amazon_lookups_per_user_per_hour: 20
 
 # 3. Impostazioni Amazon & Affiliazione
 amazon:
@@ -36,7 +46,7 @@ amazon:
 filters:
   # Se True: controlla qualsiasi link Amazon trovato nel canale
   # Se False: controlla solo i post che contengono parole come "errore", "bug", "minimo", "bomba"
-  check_all_amazon_links: true
+  check_all_amazon_links: false
 
   # Sconto minimo percentuale per scattare l'alert (se non marcato come errore esplicito)
   min_discount_pct: 35.0
