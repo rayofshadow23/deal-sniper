@@ -96,7 +96,7 @@ async def process_message(event_or_msg, chat_title: str, storage: DealStorage, n
         elif discount >= min_discount:
             should_notify = True
             reason = f"Sconto elevato (-{int(discount)}%)"
-        elif badge:
+        elif badge and discount >= min_discount:
             should_notify = True
             reason = f"Badge Offerta: {badge}"
 
