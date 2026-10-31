@@ -1,5 +1,11 @@
 import json
+import io
 import requests
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except Exception:
+    PIL_AVAILABLE = False
 from typing import Optional, List, Dict, Any
 
 class TelegramBotNotifier:
@@ -98,62 +104,41 @@ class TelegramBotNotifier:
         for chat_id in targets:
             sent = False
 
-            # 1. Opzione Preferita: Album Telegram (MediaGroup con Foto Prodotto + Grafico Keepa)
-            if product_image_bytes and (keepa_bytes or photo_url):
+            # 1. Opzione Preferita: immagine unica (prodotto + grafico Keepa uniti con Pillow) + bottoni inline
+            merged_bytes = None
+            if PIL_AVAILABLE and product_image_bytes and keepa_bytes:
                 try:
-                    files = {
-                        "prod_img": ("product.jpg", product_image_bytes, "image/jpeg")
+                    img1 = Image.open(io.BytesIO(product_image_bytes)).convert("RGB")
+                    img2 = Image.open(io.BytesIO(keepa_bytes)).convert("RGB")
+                    # ridimensiona per altezza comune
+                    h = min(img1.height, img2.height)
+                    img1 = img1.resize((int(img1.width * h / img1.height), h))
+                    img2 = img2.resize((int(img2.width * h / img2.height), h))
+                    merged = Image.new("RGB", (img1.width + img2.width, h))
+                    merged.paste(img1, (0, 0))
+                    merged.paste(img2, (img1.width, 0))
+                    buf = io.BytesIO()
+                    merged.save(buf, format="JPEG", quality=85)
+                    merged_bytes = buf.getvalue()
+                except Exception as me:
+                    print(f"[NOTIFIER] Merge Pillow fallito: {me}")
+
+            if merged_bytes:
+                try:
+                    files = {"photo": ("merged.jpg", merged_bytes, "image/jpeg")}
+                    data = {
+                        "chat_id": chat_id,
+                        "caption": msg,
+                        "parse_mode": "HTML",
+                        "reply_markup": json.dumps(reply_markup)
                     }
-                    media_group = [
-                        {
-                            "type": "photo",
-                            "media": "attach://prod_img",
-                            "caption": msg,
-                            "parse_mode": "HTML"
-                        }
-                    ]
-
-                    if keepa_bytes:
-                        files["keepa_graph"] = ("keepa.png", keepa_bytes, "image/png")
-                        media_group.append({
-                            "type": "photo",
-                            "media": "attach://keepa_graph"
-                        })
-                    else:
-                        media_group.append({
-                            "type": "photo",
-                            "media": photo_url
-                        })
-
-                    res = requests.post(
-                        f"{self.base_url}/sendMediaGroup",
-                        data={"chat_id": chat_id, "media": json.dumps(media_group)},
-                        files=files,
-                        timeout=15
-                    )
-
+                    res = requests.post(f"{self.base_url}/sendPhoto", data=data, files=files, timeout=15)
                     if res.status_code == 200:
                         sent = True
-                        # Telegram non supporta pulsanti inline direttamente sotto un MediaGroup;
-                        # inviamo un brevissimo messaggio di servizio con i bottoni interattivi
-                        btn_msg = f"⚡ <b>Azioni rapide:</b> {display_title}"
-                        try:
-                            requests.post(
-                                f"{self.base_url}/sendMessage",
-                                json={
-                                    "chat_id": chat_id,
-                                    "text": btn_msg,
-                                    "parse_mode": "HTML",
-                                    "reply_markup": reply_markup
-                                },
-                                timeout=8
-                            )
-                        except Exception as be:
-                            print(f"[NOTIFIER] Errore invio bottoni dopo MediaGroup: {be}")
                     else:
-                        print(f"[NOTIFIER] sendMediaGroup a {chat_id} fallito ({res.status_code}: {res.text[:100]}), ripiego...")
+                        print(f"[NOTIFIER] sendPhoto merged a {chat_id} fallito ({res.status_code}), ripiego...")
                 except Exception as e:
-                    print(f"[NOTIFIER] Eccezione sendMediaGroup: {e}")
+                    print(f"[NOTIFIER] Eccezione sendPhoto merged: {e}")
 
             # 2. Se MediaGroup non applicabile o fallito, prova sendPhoto singola
             if not sent:
