@@ -14,7 +14,7 @@ USER_AGENTS = [
 ]
 
 LINK_REGEX = re.compile(
-    r'((?:https?://)?(?:amzn\.to|amzlink\.to|t\.co|bit\.ly|tinyurl\.com|shorturl\.at|(?:www\.)?amazon\.[a-z.]+)/[^\s\)\>]+)',
+    r'((?:https?://)?(?:amzn.to|amzn.eu|amzlink\.to|t\.co|bit\.ly|tinyurl\.com|shorturl\.at|(?:www\.)?amazon\.[a-z.]+)/[^\s\)\>]+)',
     re.IGNORECASE
 )
 
