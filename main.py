@@ -13,14 +13,18 @@ from bot_listener import run_bot_listener
 def fetch_product_image_bytes(image_url: str):
     """Scarica la foto prodotto Amazon. Ritorna i byte o None (mai un'eccezione)."""
     if not image_url:
+        print("[Foto prodotto] nessun image_url dalla pagina Amazon (il parser non l'ha trovato)")
         return None
     try:
         import requests as _rq
         r = _rq.get(image_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
-        if r.status_code == 200 and r.content and r.headers.get("Content-Type", "").startswith("image/"):
+        ctype = r.headers.get("Content-Type", "")
+        if r.status_code == 200 and r.content and ctype.startswith("image/"):
+            print(f"[Foto prodotto] scaricata ({len(r.content)} byte) da {image_url}")
             return r.content
+        print(f"[Foto prodotto] non valida: HTTP {r.status_code}, Content-Type '{ctype}', url {image_url}")
     except Exception as e:
-        print(f"Foto prodotto non scaricata: {e}")
+        print(f"[Foto prodotto] errore download da {image_url}: {e}")
     return None
 
 
