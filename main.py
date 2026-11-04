@@ -10,6 +10,20 @@ from amazon_scraper import extract_links_from_telethon_message, resolve_amazon_l
 from bot_notifier import TelegramBotNotifier
 from bot_listener import run_bot_listener
 
+def fetch_product_image_bytes(image_url: str):
+    """Scarica la foto prodotto Amazon. Ritorna i byte o None (mai un'eccezione)."""
+    if not image_url:
+        return None
+    try:
+        import requests as _rq
+        r = _rq.get(image_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+        if r.status_code == 200 and r.content and r.headers.get("Content-Type", "").startswith("image/"):
+            return r.content
+    except Exception as e:
+        print(f"Foto prodotto non scaricata: {e}")
+    return None
+
+
 def load_config(config_path: str = "config.yaml") -> dict:
     if not os.path.exists(config_path):
         print(f"[ERRORE] File di configurazione '{config_path}' non trovato.")
@@ -138,29 +152,20 @@ async def process_message(event_or_msg, chat_title: str, storage: DealStorage, n
         ref_label = prod.get("reference_label", "")
         graph_url = prod.get("keepa_graph_url", "")
 
-        # Scarica l'immagine originale del prodotto dal canale Telegram (se presente)
-        prod_image_bytes = None
+        # Immagine per l'alert: prima la foto Amazon del prodotto (i post del canale
+        # spesso contengono solo il grafico Keepa), poi la foto del post come ripiego.
+        prod_image_bytes = await asyncio.to_thread(fetch_product_image_bytes, prod.get("image_url", ""))
+
         is_image = bool(getattr(event_or_msg, "photo", None))
         if not is_image and getattr(event_or_msg, "document", None):
             mime = getattr(event_or_msg.document, "mime_type", "") or ""
             if mime.startswith("image/"):
                 is_image = True
-
-        if is_image:
+        if not prod_image_bytes and is_image:
             try:
                 prod_image_bytes = await event_or_msg.download_media(file=bytes)
             except Exception as e:
                 print(f"[{chat_title}] Errore download immagine dal messaggio originale: {e}")
-
-        # Nessuna foto nel post del canale: usa la foto principale del prodotto su Amazon
-        if not prod_image_bytes and prod.get("image_url"):
-            try:
-                import requests as _rq
-                r_img = await asyncio.to_thread(_rq.get, prod["image_url"], headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
-                if r_img.status_code == 200 and r_img.content and r_img.headers.get("Content-Type", "").startswith("image/"):
-                    prod_image_bytes = r_img.content
-            except Exception as e:
-                print(f"[{chat_title}] Foto prodotto non scaricata: {e}")
 
         print(f"🚨 [ALERT CONFERMATO] {title} a {price:.2f}€ (-{discount}%)! Invio a {len(recipients)} destinatari...")
 
