@@ -337,6 +337,14 @@ def _find_price(region: str) -> float:
     return 0.0
 
 
+def _main_image_url(html: str) -> str:
+    """URL della foto principale del prodotto, dalla pagina già scaricata (nessuna richiesta extra)."""
+    m = re.search(r'id=["\']landingImage["\'][^>]*data-old-hires=["\'](https://[^"\']+)["\']', html)
+    if not m:
+        m = re.search(r'"hiRes"\s*:\s*"(https://m\.media-amazon\.com/images/I/[^"]+)"', html)
+    return m.group(1) if m else ""
+
+
 def _parse_product_html(asin: str, html: str, url: str) -> Dict[str, Any]:
     title = ""
     m_title = re.search(r'id=["\']productTitle["\'][^>]*>\s*([^<]+)\s*<', html)
@@ -398,6 +406,7 @@ def _parse_product_html(asin: str, html: str, url: str) -> Dict[str, Any]:
         "reference_label": reference_label,
         "discount_pct": discount_pct,
         "deal_badge": deal_badge,
+        "image_url": _main_image_url(html),
         "keepa_graph_url": f"https://graph.keepa.com/pricehistory.png?asin={asin}&domain=it",
         "is_available": is_available,
         "url": url,

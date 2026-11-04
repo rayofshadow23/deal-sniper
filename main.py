@@ -152,6 +152,16 @@ async def process_message(event_or_msg, chat_title: str, storage: DealStorage, n
             except Exception as e:
                 print(f"[{chat_title}] Errore download immagine dal messaggio originale: {e}")
 
+        # Nessuna foto nel post del canale: usa la foto principale del prodotto su Amazon
+        if not prod_image_bytes and prod.get("image_url"):
+            try:
+                import requests as _rq
+                r_img = await asyncio.to_thread(_rq.get, prod["image_url"], headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+                if r_img.status_code == 200 and r_img.content and r_img.headers.get("Content-Type", "").startswith("image/"):
+                    prod_image_bytes = r_img.content
+            except Exception as e:
+                print(f"[{chat_title}] Foto prodotto non scaricata: {e}")
+
         print(f"🚨 [ALERT CONFERMATO] {title} a {price:.2f}€ (-{discount}%)! Invio a {len(recipients)} destinatari...")
 
         # Invia notifica sul Bot Telegram (album con foto prodotto + grafico Keepa e pulsanti inline)
