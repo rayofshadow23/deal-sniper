@@ -319,9 +319,19 @@ def _price_region(html: str) -> str:
     return html
 
 
+_OFFSCREEN_RE = re.compile(r'class=["\'][^"\']*a-offscreen[^"\']*["\']>\s*([0-9.,]+)(?:\s|&nbsp;)*(?:€|&euro;)?\s*<')
+_STRIKE_MARKERS = ("a-text-price", "data-a-strike", "basisPrice")
+
+
 def _find_price(region: str) -> float:
-    m = re.search(r'class=["\'][^"\']*a-offscreen[^"\']*["\']>\s*([0-9.,]+)(?:\s|&nbsp;)*(?:€|&euro;)?\s*<', region)
-    if m:
+    # Il primo prezzo del blocco può essere quello barrato (prezzo consigliato):
+    # lo saltiamo e prendiamo il primo prezzo di vendita.
+    for m in _OFFSCREEN_RE.finditer(region):
+        # contenitore .a-price più vicino al prezzo: se è barrato, è il prezzo consigliato
+        wrapper_start = region.rfind('a-price', 0, m.start())
+        before = region[wrapper_start if wrapper_start != -1 else max(0, m.start() - 200): m.start()]
+        if any(marker in before for marker in _STRIKE_MARKERS):
+            continue
         p = parse_price_str(m.group(1))
         if p:
             return p
