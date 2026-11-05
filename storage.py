@@ -36,6 +36,13 @@ class DealStorage:
                     updated_at REAL
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    chat_id INTEGER PRIMARY KEY,
+                    min_discount_pct REAL,
+                    updated_at REAL
+                )
+            """)
             conn.commit()
 
     def is_message_processed(self, chat_id: int, message_id: int) -> bool:
@@ -106,6 +113,38 @@ class DealStorage:
                 return True, prev_price
             return False, prev_price
 
+    def get_user_min_discount(self, chat_id: int, default: float) -> float:
+        """Soglia di sconto personale dell'utente, o il default del config se non impostata."""
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT min_discount_pct FROM user_settings WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+        if row and row[0] is not None:
+            return float(row[0])
+        return float(default)
+
+    def has_custom_min_discount(self, chat_id: int) -> bool:
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT min_discount_pct FROM user_settings WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+        return bool(row and row[0] is not None)
+
+    def set_user_min_discount(self, chat_id: int, value: float):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO user_settings (chat_id, min_discount_pct, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(chat_id) DO UPDATE SET min_discount_pct = excluded.min_discount_pct, updated_at = excluded.updated_at",
+                (chat_id, float(value), time.time())
+            )
+            conn.commit()
+
+    def reset_user_min_discount(self, chat_id: int):
+        """Torna al default del config."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM user_settings WHERE chat_id = ?", (chat_id,))
+            conn.commit()
+
     def get_user_keywords(self, chat_id: int) -> Optional[list]:
         """
         Restituisce:
@@ -150,3 +189,17 @@ class DealStorage:
 
         text_lower = search_text.lower()
         return any(kw in text_lower for kw in active_kw)
+
+
+MIN_DISCOUNT_MIN = 1.0
+MIN_DISCOUNT_MAX = 90.0
+
+
+def parse_min_discount(raw: str) -> float:
+    """Accetta '25', '25%', '25,5'. Solleva ValueError se fuori range o non numerico."""
+    txt = (raw or "").strip().replace("%", "").replace(",", ".")
+    value = float(txt)  # ValueError se non è un numero
+    if not (MIN_DISCOUNT_MIN <= value <= MIN_DISCOUNT_MAX):
+        raise ValueError(f"fuori range ({MIN_DISCOUNT_MIN:g}-{MIN_DISCOUNT_MAX:g})")
+    return round(value, 1)
+

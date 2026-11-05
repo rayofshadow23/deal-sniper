@@ -1,7 +1,7 @@
 import asyncio
 import requests
 from typing import Dict, Any, List, Optional
-from storage import DealStorage
+from storage import DealStorage, parse_min_discount
 from amazon_scraper import extract_links_from_text, resolve_amazon_link, fetch_amazon_product
 import io
 import time
@@ -43,6 +43,7 @@ def register_bot_commands(base_url: str):
         {"command": "addfilter", "description": "➕ Aggiungi parole chiave (es. /addfilter ssd, nvme)"},
         {"command": "removefilter", "description": "➖ Rimuovi parole chiave (es. /removefilter nvme)"},
         {"command": "all", "description": "🔓 Ricevi tutte le offerte senza filtri"},
+        {"command": "soglia", "description": "📉 Imposta la tua soglia di sconto (es. /soglia 25)"},
         {"command": "status", "description": "📊 Canali monitorati e stato bot"},
         {"command": "help", "description": "❓ Guida all'uso e spiegazione"}
     ]
@@ -204,6 +205,7 @@ def handle_command(base_url: str, chat_id: int, text: str, storage: DealStorage,
             "📋 <b>MENU COMANDI DISPONIBILI:</b>\n\n"
             "• <code>/addfilter ssd, nvme</code> : Aggiunge parole chiave ai tuoi filtri\n"
             "• <code>/removefilter nvme</code> : Rimuove parole chiave dai tuoi filtri\n"
+            "• <code>/soglia 25</code> : Ricevi solo offerte con sconto ≥ 25% (<code>/soglia</code> per vedere la tua, <code>/soglia reset</code> per il default)\n"
             "• <code>/filter</code> : Visualizza i filtri attualmente attivi per la tua chat\n"
             "• <code>/all</code> : Rimuove i filtri e ricevi <b>TUTTE</b> le offerte ed errori\n"
             "• <code>/status</code> : Canali monitorati e stato del bot\n"
@@ -243,6 +245,31 @@ def handle_command(base_url: str, chat_id: int, text: str, storage: DealStorage,
             "✅ <b>Filtri azzerati!</b> Da adesso riceverai <b>TUTTE</b> le offerte e gli errori di prezzo senza distinzione.",
             reply_markup=DEFAULT_KEYBOARD
         )
+        return
+
+    # 3b. Soglia di sconto personale (/soglia, /soglia 25, /soglia reset)
+    if lower == "/soglia" or lower.startswith("/soglia "):
+        arg = text[len("/soglia"):].strip()
+        default_min = float(config.get("filters", {}).get("min_discount_pct", 30.0))
+        if not arg:
+            cur = storage.get_user_min_discount(chat_id, default_min)
+            origin = "impostata da te" if storage.has_custom_min_discount(chat_id) else "default del server"
+            reply = (
+                f"📉 <b>La tua soglia di sconto</b>: <b>{cur:g}%</b> ({origin})\n\n"
+                "Per cambiarla: <code>/soglia 25</code>\nPer tornare al default: <code>/soglia reset</code>"
+            )
+        elif arg.lower() == "reset":
+            storage.reset_user_min_discount(chat_id)
+            reply = f"✅ Soglia ripristinata al default del server: <b>{default_min:g}%</b>."
+        else:
+            try:
+                value = parse_min_discount(arg)
+            except ValueError as e:
+                reply = f"⚠️ Valore non valido: {e}. Esempio: <code>/soglia 25</code>."
+            else:
+                storage.set_user_min_discount(chat_id, value)
+                reply = f"✅ Soglia impostata a <b>{value:g}%</b>. Riceverai solo offerte con sconto pari o superiore."
+        send_reply(base_url, chat_id, reply, reply_markup=DEFAULT_KEYBOARD)
         return
 
     # 4. Visualizzazione filtri attuali
