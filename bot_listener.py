@@ -39,7 +39,9 @@ def register_bot_commands(base_url: str):
     """
     commands = [
         {"command": "menu", "description": "📱 Mostra il menu principale"},
-        {"command": "filter", "description": "🔍 Mostra o imposta i filtri (es. /filter ssd, nvme)"},
+        {"command": "filter", "description": "🔍 Mostra i filtri attivi"},
+        {"command": "addfilter", "description": "➕ Aggiungi parole chiave (es. /addfilter ssd, nvme)"},
+        {"command": "removefilter", "description": "➖ Rimuovi parole chiave (es. /removefilter nvme)"},
         {"command": "all", "description": "🔓 Ricevi tutte le offerte senza filtri"},
         {"command": "status", "description": "📊 Canali monitorati e stato bot"},
         {"command": "help", "description": "❓ Guida all'uso e spiegazione"}
@@ -200,9 +202,10 @@ def handle_command(base_url: str, chat_id: int, text: str, storage: DealStorage,
             "🎯 <b>BENVENUTO IN DEAL SNIPER BOT!</b>\n\n"
             "Monitoro i canali Telegram di offerte ed errori di prezzo Amazon in tempo reale.\n\n"
             "📋 <b>MENU COMANDI DISPONIBILI:</b>\n\n"
-            "• <code>/filter ssd, nvme</code> : Imposta parole chiave (notifica solo quei prodotti)\n"
-            "• <code>/all</code> : Rimuove i filtri e ricevi <b>TUTTE</b> le offerte ed errori\n"
+            "• <code>/addfilter ssd, nvme</code> : Aggiunge parole chiave ai tuoi filtri\n"
+            "• <code>/removefilter nvme</code> : Rimuove parole chiave dai tuoi filtri\n"
             "• <code>/filter</code> : Visualizza i filtri attualmente attivi per la tua chat\n"
+            "• <code>/all</code> : Rimuove i filtri e ricevi <b>TUTTE</b> le offerte ed errori\n"
             "• <code>/status</code> : Canali monitorati e stato del bot\n"
             "• <code>/menu</code> : Riapre questo menu rapido\n\n"
             "<i>💡 Suggerimento: Puoi anche scrivere direttamente una o più parole chiave separate da virgola (es. <code>ssd, nvme, lego</code>)!</i>"
@@ -242,7 +245,7 @@ def handle_command(base_url: str, chat_id: int, text: str, storage: DealStorage,
         )
         return
 
-    # 4. Visualizzazione Filtri Attuali
+    # 4. Visualizzazione filtri attuali
     if lower in ["/filter", "🔍 i miei filtri"]:
         kw = storage.get_user_keywords(chat_id)
         if kw is None:
@@ -251,26 +254,47 @@ def handle_command(base_url: str, chat_id: int, text: str, storage: DealStorage,
             msg = "ℹ️ Sei impostato su <b>TUTTO</b>: riceverai ogni offerta ed errore di prezzo senza filtri."
         else:
             msg = f"🎯 <b>I tuoi filtri attivi attuali:</b>\n" + "\n".join(f"• <code>{k}</code>" for k in kw)
-        msg += "\n\nPer modificarli: <code>/filter ssd, nvme</code>\nPer ricevere tutto: <code>/all</code>"
+        msg += "\n\nPer aggiungere: <code>/addfilter ssd, nvme</code>\nPer rimuovere: <code>/removefilter nvme</code>\nPer ricevere tutto: <code>/all</code>"
         send_reply(base_url, chat_id, msg, reply_markup=DEFAULT_KEYBOARD)
         return
 
-    # 5. Impostazione Filtri con argomenti
-    if lower.startswith("/filter"):
-        args = text[7:].strip()
-    else:
-        return
+    # 5. Aggiunta / rimozione parole chiave
+    if lower.startswith("/addfilter") or lower.startswith("/removefilter"):
+        is_add = lower.startswith("/addfilter")
+        args = text[len("/addfilter" if is_add else "/removefilter"):].strip()
+        items = [k.strip().lower() for k in args.split(",") if k.strip()]
+        if not items:
+            usage = "/addfilter ssd, nvme" if is_add else "/removefilter nvme"
+            send_reply(base_url, chat_id, f"ℹ️ Scrivi almeno una parola chiave, es. <code>{usage}</code>.", reply_markup=DEFAULT_KEYBOARD)
+            return
 
-    raw_list = [k.strip().lower() for k in args.split(",") if k.strip()]
-    if raw_list:
-        storage.set_user_keywords(chat_id, raw_list)
-        bullet_list = "\n".join(f"• <code>{k}</code>" for k in raw_list)
-        reply = (
-            "✅ <b>Filtro prodotti aggiornato con successo!</b>\n\n"
-            f"Riceverai notifiche solo per offerte o errori che contengono:\n{bullet_list}\n\n"
-            "<i>(Per tornare a ricevere tutto, premi '🔓 Ricevi Tutto' o digita <code>/all</code>)</i>"
-        )
+        kw = storage.get_user_keywords(chat_id)
+        # None = nessuna preferenza personale: si parte dai default del server
+        # [] = 'TUTTO': aggiungere crea una lista specifica da zero
+        base = list(default_kw) if kw is None else list(kw)
+
+        if is_add:
+            new_list = base + [k for k in items if k not in base]
+            storage.set_user_keywords(chat_id, new_list)
+            reply = (
+                "✅ <b>Parole chiave aggiunte.</b>\n\n"
+                "Filtri attivi ora:\n" + "\n".join(f"• <code>{k}</code>" for k in new_list)
+            )
+        else:
+            if not base:
+                reply = "ℹ️ Sei impostato su <b>TUTTO</b>: non c'è niente da rimuovere."
+            else:
+                new_list = [k for k in base if k not in items]
+                storage.set_user_keywords(chat_id, new_list)  # lista vuota = TUTTO
+                if new_list:
+                    reply = (
+                        "✅ <b>Parole chiave rimosse.</b>\n\n"
+                        "Filtri attivi ora:\n" + "\n".join(f"• <code>{k}</code>" for k in new_list)
+                    )
+                else:
+                    reply = "✅ <b>Nessun filtro rimasto</b>: riceverai <b>TUTTE</b> le offerte ed errori."
         send_reply(base_url, chat_id, reply, reply_markup=DEFAULT_KEYBOARD)
+        return
 
 def send_reply(base_url: str, chat_id: int, text: str, reply_markup: Optional[dict] = None):
     """Invia un messaggio di risposta con eventuale tastiera menu."""
