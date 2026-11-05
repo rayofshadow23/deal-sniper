@@ -108,22 +108,18 @@ async def process_message(event_or_msg, chat_title: str, storage: DealStorage, n
         title = prod.get("title", "Prodotto Amazon")
         badge = prod.get("deal_badge", "")
 
-        # Verifica se soddisfa i criteri di alert
-        should_notify = False
-        reason = ""
-
-        if is_error_flagged:
-            should_notify = True
-            reason = "Segnalato come Errore/Bomba dal canale"
-        elif discount >= min_discount:
-            should_notify = True
-            reason = f"Sconto elevato (-{int(discount)}%)"
-        elif badge and discount >= min_discount:
-            should_notify = True
-            reason = f"Badge Offerta: {badge}"
-
-        if not should_notify:
-            print(f"[{chat_title}] ASIN {asin} prezzo {price}€ (-{discount}%), scartato (sotto soglia).")
+        # Destinatari: ogni utente ha la sua soglia di sconto (/soglia), default dal config.
+        # Gli errori di prezzo segnalati dal canale arrivano a tutti.
+        all_alert_cids = config.get("telegram_bot", {}).get("alert_chat_ids", [])
+        default_kw = config.get("filters", {}).get("keywords", [])
+        search_target = f"{title} {msg_text}"
+        recipients = [
+            cid for cid in all_alert_cids
+            if storage.matches_user_filter(cid, search_target, default_kw)
+            and (is_error_flagged or discount >= storage.get_user_min_discount(cid, min_discount))
+        ]
+        if not recipients:
+            print(f"[{chat_title}] ASIN {asin} prezzo {price}€ (-{discount}%): nessun destinatario con questa soglia/filtri, saltato.")
             continue
 
         # Verifica cooldown per non spammare (lock per evitare duplicati tra canali)
@@ -135,19 +131,6 @@ async def process_message(event_or_msg, chat_title: str, storage: DealStorage, n
                 storage.record_alert(asin, title, price, discount, chat_title)
                 skip = False
         if skip:
-            continue
-
-        # Verifica quali utenti vogliono questa notifica in base ai loro filtri personali
-        default_kw = config.get("filters", {}).get("keywords", [])
-        search_target = f"{title} {msg_text}"
-        all_alert_cids = config.get("telegram_bot", {}).get("alert_chat_ids", [])
-        recipients = [
-            cid for cid in all_alert_cids
-            if storage.matches_user_filter(cid, search_target, default_kw)
-        ]
-
-        if not recipients:
-            print(f"[{chat_title}] ASIN {asin} scartato: nessun utente ha filtri corrispondenti a '{title[:35]}'.")
             continue
 
         # Verifica se è un nuovo minimo rispetto allo storico registrato dal bot
